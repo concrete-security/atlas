@@ -10,32 +10,18 @@ use std::sync::{Arc, Mutex};
 
 #[cfg(test)]
 use x509_parser::prelude::{FromDer, X509Certificate};
-
-#[cfg(not(target_arch = "wasm32"))]
 use rustls::crypto::aws_lc_rs;
-
-#[cfg(target_arch = "wasm32")]
-use rustls::crypto::ring;
 
 mod protocol;
 mod tdx;
 
 pub use tdx::TdxTcbPolicy;
 
-#[cfg(not(target_arch = "wasm32"))]
 pub mod platform {
     pub use std::time::SystemTime;
     pub use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
     pub use tokio_rustls::client::TlsStream;
     pub use tokio_rustls::TlsConnector;
-}
-
-#[cfg(target_arch = "wasm32")]
-pub mod platform {
-    pub use futures::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-    pub use futures_rustls::client::TlsStream;
-    pub use futures_rustls::TlsConnector;
-    pub use web_time::SystemTime;
 }
 
 use platform::*;
@@ -156,16 +142,8 @@ pub struct AttestationResult {
 }
 
 /// Trait alias for async byte streams on native targets.
-#[cfg(not(target_arch = "wasm32"))]
 pub trait AsyncByteStream: AsyncRead + AsyncWrite + Unpin + Send {}
-#[cfg(not(target_arch = "wasm32"))]
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> AsyncByteStream for T {}
-
-/// Trait alias for async byte streams on wasm, where `Send` is not required.
-#[cfg(target_arch = "wasm32")]
-pub trait AsyncByteStream: AsyncRead + AsyncWrite + Unpin {}
-#[cfg(target_arch = "wasm32")]
-impl<T: AsyncRead + AsyncWrite + Unpin> AsyncByteStream for T {}
 
 /// Verifier that accepts any certificate but records the presented leaf.
 #[derive(Debug, Clone, Default)]
@@ -227,14 +205,8 @@ impl ServerCertVerifier for PromiscuousVerifier {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn get_crypto_provider() -> Arc<CryptoProvider> {
     Arc::new(aws_lc_rs::default_provider())
-}
-
-#[cfg(target_arch = "wasm32")]
-fn get_crypto_provider() -> Arc<CryptoProvider> {
-    Arc::new(ring::default_provider())
 }
 
 fn build_client_config(
