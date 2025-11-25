@@ -1,5 +1,5 @@
 use crate::platform::{AsyncReadExt, AsyncWriteExt, TlsStream};
-use crate::tdx::{self, TcgEvent};
+use crate::tdx;
 use crate::{AsyncByteStream, AttestationEndpoint, AttestationResult, Policy, RatlsError};
 use dcap_qvl::QuoteCollateralV3;
 use rand::rngs::OsRng;
@@ -52,20 +52,14 @@ where
     .map_err(|e| RatlsError::Io(e.to_string()))?;
     let request = format!(
         "POST {} HTTP/1.1\r\n\
-         Host: {}\r\n\
+         Host: localhost\r\n\
          Content-Type: application/json\r\n\
          Content-Length: {}\r\n\
-         Connection: {}\r\n\
+         Connection: keep-alive\r\n\
          \r\n\
          {}",
         endpoint.path,
-        endpoint.host,
         body_json.len(),
-        if endpoint.use_keep_alive {
-            "keep-alive"
-        } else {
-            "close"
-        },
         body_json
     );
 
@@ -135,7 +129,7 @@ where
         .ok_or_else(|| RatlsError::Vendor("missing quote payload".into()))?;
     let quote_bytes = hex::decode(&dstack_quote.quote)
         .map_err(|e| RatlsError::Vendor(format!("Invalid quote hex: {e}")))?;
-    let event_log = parse_event_log(dstack_quote.event_log)?;
+    let event_log = tdx::parse_event_log(dstack_quote.event_log)?;
 
     let collateral = if let Some(collateral) = response.collateral {
         collateral
@@ -157,38 +151,4 @@ where
     tdx::verify_tls_certificate_in_log(&event_log, server_cert)?;
 
     Ok(attestation)
-}
-
-fn parse_event_log(value: Value) -> Result<Vec<TcgEvent>, RatlsError> {
-    match value {
-        Value::Null => Ok(vec![]),
-        Value::Array(_) => serde_json::from_value(value)
-            .map_err(|e| RatlsError::Vendor(format!("Invalid event log array: {e}"))),
-        Value::String(s) => {
-            if s.trim().is_empty() {
-                Ok(vec![])
-            } else {
-                let preview = event_log_preview(&s);
-                serde_json::from_str::<Vec<TcgEvent>>(&s).map_err(|e| {
-                    RatlsError::Vendor(format!(
-                        "Invalid event log string (len {}, preview {}): {e}",
-                        s.len(),
-                        preview
-                    ))
-                })
-            }
-        }
-        other => Err(RatlsError::Vendor(format!(
-            "Unsupported event log format: {other}"
-        ))),
-    }
-}
-
-fn event_log_preview(s: &str) -> String {
-    let trimmed = s.trim();
-    let mut snippet: String = trimmed.chars().take(120).collect();
-    if trimmed.len() > snippet.len() {
-        snippet.push('…');
-    }
-    snippet.replace('\n', "\\n")
 }

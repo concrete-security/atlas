@@ -1,6 +1,6 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use ratls_core::{tls_connect, Policy};
+use ratls_core::{ratls_connect, Policy};
 use tokio::net::TcpStream;
 
 fn live_enabled() -> bool {
@@ -87,7 +87,7 @@ async fn connect_to_vllm_with_ratls() {
         ..Policy::default()
     };
 
-    let result = tls_connect(stream, HOST, policy, None).await;
+    let result = ratls_connect(stream, HOST, policy, None).await;
     assert!(
         result.is_err(),
         "connection to {HOST} unexpectedly succeeded without attestation error: {:?}",

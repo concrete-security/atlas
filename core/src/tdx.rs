@@ -3,6 +3,7 @@ use dcap_qvl::quote::{Quote, Report, TDReport10, TDReport15};
 use dcap_qvl::QuoteCollateralV3;
 use hex::{decode, encode};
 use serde::{de::Error as DeError, Deserialize, Deserializer, Serialize, Serializer};
+use serde_json::Value;
 use sha2::{Digest, Sha256, Sha384};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -23,14 +24,14 @@ pub struct TdxTcbPolicy {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct TcgEvent {
-    #[serde(default, alias = "type", alias = "event")]
-    pub message: Option<String>,
-    #[serde(default, alias = "event_payload")]
-    pub details: Option<String>,
-    #[serde(default)]
-    pub digest: Option<String>,
-    #[serde(default)]
-    pub imr: Option<u32>,
+    #[serde(alias = "event_type", alias = "type")]
+    pub event_type: u32,
+    #[serde(alias = "event")]
+    pub event: String,
+    #[serde(alias = "event_payload")]
+    pub event_payload: String,
+    pub digest: String,
+    pub imr: u32,
 }
 
 pub async fn verify_attestation(
@@ -106,46 +107,62 @@ pub fn verify_event_log_integrity(quote: &[u8], events: &[TcgEvent]) -> Result<(
 
     let parsed = parse_quote_report(quote)?;
     let report = TdReportRef::from_report(&parsed.report)?;
-    let mut accumulator = [0u8; 48];
-    let mut last_event = None;
-    let mut processed = 0usize;
+    let mut accumulators = [[0u8; 48]; 4];
+    let mut last_events: [Option<(String, String)>; 4] = std::array::from_fn(|_| None);
+    let mut processed = [0usize; 4];
 
     for event in events {
-        if event.imr.unwrap_or(0) != 3 {
-            continue;
-        }
-
-        let mut digest = event.digest_bytes()?;
-        if digest.len() < accumulator.len() {
-            digest.resize(accumulator.len(), 0);
-        }
-        if digest.len() != accumulator.len() {
-            let label = event.message.as_deref().unwrap_or("unknown");
+        if event.imr > 3 {
             return Err(RatlsError::Vendor(format!(
-                "event '{label}' digest has invalid length {}",
+                "event '{}' references unsupported RTMR{}",
+                event.label(),
+                event.imr
+            )));
+        }
+        let idx = event.imr as usize;
+        let mut digest = event.digest_bytes()?;
+        if digest.len() < accumulators[idx].len() {
+            digest.resize(accumulators[idx].len(), 0);
+        }
+        if digest.len() != accumulators[idx].len() {
+            return Err(RatlsError::Vendor(format!(
+                "event '{}' digest has invalid length {}",
+                event.label(),
                 digest.len()
             )));
         }
 
         let mut hasher = Sha384::new();
-        hasher.update(&accumulator);
+        hasher.update(&accumulators[idx]);
         hasher.update(&digest);
         let hashed = hasher.finalize();
-        accumulator.copy_from_slice(&hashed);
-        processed += 1;
-        last_event = Some((
-            event.message.clone().unwrap_or_else(|| "unknown".into()),
-            hex::encode(&digest),
-        ));
+        accumulators[idx].copy_from_slice(&hashed);
+        processed[idx] += 1;
+        last_events[idx] = Some((event.label(), hex::encode(&digest)));
     }
 
-    if accumulator != report.as_td10().rt_mr3 {
-        let expected = hex::encode(report.as_td10().rt_mr3);
-        let actual = hex::encode(accumulator);
-        let (last_msg, last_digest) = last_event.unwrap_or_else(|| ("none".into(), "n/a".into()));
-        return Err(RatlsError::Policy(format!(
-            "event log replay does not match RTMR3 (expected {expected}, computed {actual}, events_processed {processed}, last_event '{last_msg}' digest {last_digest})"
-        )));
+    let td10 = report.as_td10();
+    let expected = [
+        td10.rt_mr0.clone(),
+        td10.rt_mr1.clone(),
+        td10.rt_mr2.clone(),
+        td10.rt_mr3.clone(),
+    ];
+
+    for (idx, expected_reg) in expected.into_iter().enumerate() {
+        if accumulators[idx] != expected_reg {
+            let (last_msg, last_digest) = last_events[idx]
+                .clone()
+                .unwrap_or_else(|| ("none".into(), "n/a".into()));
+            return Err(RatlsError::Policy(format!(
+                "event log replay mismatch for RTMR{idx} (expected {}, computed {}, events_processed {}, last_event '{}' digest {})",
+                hex::encode(expected_reg),
+                hex::encode(accumulators[idx]),
+                processed[idx],
+                last_msg,
+                last_digest
+            )));
+        }
     }
 
     Ok(())
@@ -159,18 +176,16 @@ pub fn verify_tls_certificate_in_log(
     hasher.update(cert_data);
     let cert_hash = encode(hasher.finalize());
 
+    let mut last_payload = None;
     for event in events {
-        if event
-            .message
-            .as_deref()
-            .map(|msg| msg.eq_ignore_ascii_case("New TLS Certificate"))
-            .unwrap_or(false)
-        {
-            if let Some(payload) = event.payload_as_string() {
-                if payload == cert_hash {
-                    return Ok(());
-                }
-            }
+        if event.event.as_str().eq_ignore_ascii_case("New TLS Certificate") {
+            last_payload = event.payload_as_string();
+        }
+    }
+
+    if let Some(payload) = last_payload {
+        if payload == cert_hash {
+            return Ok(());
         }
     }
 
@@ -181,24 +196,26 @@ pub fn verify_tls_certificate_in_log(
 
 impl TcgEvent {
     fn digest_bytes(&self) -> Result<Vec<u8>, RatlsError> {
-        let digest = self.digest.as_deref().ok_or_else(|| {
-            RatlsError::Vendor(match self.message.as_deref() {
-                Some(msg) => format!("event '{msg}' is missing digest data"),
-                None => "event log entry is missing digest data".into(),
-            })
-        })?;
-        decode_hex_field(digest).map_err(|e| {
-            RatlsError::Vendor(match self.message.as_deref() {
-                Some(msg) => format!("invalid digest for event '{msg}': {e}"),
-                None => format!("invalid digest for unnamed event: {e}"),
-            })
-        })
+        decode_hex_field(&self.digest)
+            .map_err(|e| RatlsError::Vendor(format!("invalid digest for event '{}': {e}", self.label())))
     }
 
     fn payload_as_string(&self) -> Option<String> {
-        let raw = self.details.as_deref()?;
+        let raw = self.event_payload.trim();
+        if raw.is_empty() {
+            return None;
+        }
         let bytes = decode_hex_field(raw).ok()?;
         String::from_utf8(bytes).ok()
+    }
+
+    fn label(&self) -> String {
+        let trimmed = self.event.trim();
+        if trimmed.is_empty() {
+            format!("type {}", self.event_type)
+        } else {
+            trimmed.to_string()
+        }
     }
 }
 
@@ -257,19 +274,12 @@ fn decode_hex_field(value: &str) -> Result<Vec<u8>, String> {
 }
 
 fn normalize_hex(value: &str) -> String {
-    let trimmed = value.trim();
-    let trimmed = trimmed
-        .strip_prefix("0x")
-        .or_else(|| trimmed.strip_prefix("0X"))
-        .unwrap_or(trimmed);
-    let mut cleaned = String::with_capacity(trimmed.len());
-    for ch in trimmed.chars() {
-        if !ch.is_ascii_whitespace() {
-            cleaned.push(ch);
-        }
+    let mut lowered = value.trim().to_ascii_lowercase();
+    if lowered.starts_with("0x") {
+        lowered.drain(..2);
     }
-    cleaned.make_ascii_lowercase();
-    cleaned
+    lowered.retain(|ch| !ch.is_ascii_whitespace());
+    lowered
 }
 
 fn serialize_hex_opt<S>(value: &Option<Vec<u8>>, serializer: S) -> Result<S::Ok, S::Error>
@@ -292,4 +302,38 @@ where
         decode(&normalized).map_err(DeError::custom)
     })
     .transpose()
+}
+
+pub fn parse_event_log(value: Value) -> Result<Vec<TcgEvent>, RatlsError> {
+    match value {
+        Value::Null => Ok(vec![]),
+        Value::Array(_) => serde_json::from_value(value)
+            .map_err(|e| RatlsError::Vendor(format!("Invalid event log array: {e}"))),
+        Value::String(s) => {
+            if s.trim().is_empty() {
+                Ok(vec![])
+            } else {
+                let preview = event_log_preview(&s);
+                serde_json::from_str::<Vec<TcgEvent>>(&s).map_err(|e| {
+                    RatlsError::Vendor(format!(
+                        "Invalid event log string (len {}, preview {}): {e}",
+                        s.len(),
+                        preview
+                    ))
+                })
+            }
+        }
+        other => Err(RatlsError::Vendor(format!(
+            "Unsupported event log format: {other}"
+        ))),
+    }
+}
+
+fn event_log_preview(s: &str) -> String {
+    let trimmed = s.trim();
+    let mut snippet: String = trimmed.chars().take(120).collect();
+    if trimmed.len() > snippet.len() {
+        snippet.push('…');
+    }
+    snippet.replace('\n', "\\n")
 }
