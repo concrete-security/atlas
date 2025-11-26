@@ -1,6 +1,6 @@
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::client::{ClientConfig, WebPkiServerVerifier};
-use rustls::crypto::{aws_lc_rs, CryptoProvider};
+use rustls::crypto::CryptoProvider;
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, Error as RustlsError, RootCertStore, SignatureScheme};
 use serde::{Deserialize, Serialize};
@@ -8,16 +8,31 @@ use thiserror::Error;
 
 use std::sync::{Arc, Mutex};
 
+#[cfg(not(target_arch = "wasm32"))]
+use rustls::crypto::aws_lc_rs;
+
+#[cfg(target_arch = "wasm32")]
+use rustls::crypto::ring;
+
 mod protocol;
 mod tdx;
 
 pub use tdx::TdxTcbPolicy;
 
+#[cfg(not(target_arch = "wasm32"))]
 pub mod platform {
     pub use std::time::SystemTime;
     pub use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
     pub use tokio_rustls::client::TlsStream;
     pub use tokio_rustls::TlsConnector;
+}
+
+#[cfg(target_arch = "wasm32")]
+pub mod platform {
+    pub use futures::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+    pub use futures_rustls::client::TlsStream;
+    pub use futures_rustls::TlsConnector;
+    pub use web_time::SystemTime;
 }
 
 use platform::*;
@@ -129,17 +144,27 @@ pub struct AttestationResult {
     pub advisory_ids: Vec<String>,
 }
 
-/// Trait alias for async byte streams.
+/// Trait alias for async byte streams on native targets.
+#[cfg(not(target_arch = "wasm32"))]
 pub trait AsyncByteStream: AsyncRead + AsyncWrite + Unpin + Send {}
+#[cfg(not(target_arch = "wasm32"))]
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> AsyncByteStream for T {}
 
+/// Trait alias for async byte streams on wasm, where `Send` is not required.
+#[cfg(target_arch = "wasm32")]
+pub trait AsyncByteStream: AsyncRead + AsyncWrite + Unpin {}
+#[cfg(target_arch = "wasm32")]
+impl<T: AsyncRead + AsyncWrite + Unpin> AsyncByteStream for T {}
+
 /// Verifier that validates certificates against public CAs and records the leaf cert.
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug)]
 struct CaVerifier {
     inner: Arc<WebPkiServerVerifier>,
     last_cert: Arc<Mutex<Option<Vec<u8>>>>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl CaVerifier {
     fn new() -> Self {
         let mut root_store = RootCertStore::empty();
@@ -163,6 +188,7 @@ impl CaVerifier {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl ServerCertVerifier for CaVerifier {
     fn verify_server_cert(
         &self,
@@ -203,12 +229,89 @@ impl ServerCertVerifier for CaVerifier {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+#[derive(Debug)]
+struct CaVerifier {
+    inner: Arc<WebPkiServerVerifier>,
+    last_cert: Arc<Mutex<Option<Vec<u8>>>>,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl CaVerifier {
+    fn new() -> Self {
+        let mut root_store = RootCertStore::empty();
+        root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        let provider = get_crypto_provider();
+        let inner = WebPkiServerVerifier::builder_with_provider(
+            Arc::new(root_store),
+            provider,
+        )
+        .build()
+        .expect("failed to build WebPkiServerVerifier");
+        Self {
+            inner,
+            last_cert: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    fn take_cert(&self) -> Option<Vec<u8>> {
+        self.last_cert.lock().ok()?.take()
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl ServerCertVerifier for CaVerifier {
+    fn verify_server_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        intermediates: &[CertificateDer<'_>],
+        server_name: &ServerName<'_>,
+        ocsp_response: &[u8],
+        now: UnixTime,
+    ) -> Result<ServerCertVerified, RustlsError> {
+        self.inner
+            .verify_server_cert(end_entity, intermediates, server_name, ocsp_response, now)?;
+        if let Ok(mut guard) = self.last_cert.lock() {
+            *guard = Some(end_entity.to_vec());
+        }
+        Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, RustlsError> {
+        self.inner.verify_tls12_signature(message, cert, dss)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, RustlsError> {
+        self.inner.verify_tls13_signature(message, cert, dss)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.inner.supported_verify_schemes()
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn get_crypto_provider() -> Arc<CryptoProvider> {
     Arc::new(aws_lc_rs::default_provider())
 }
 
-fn build_client_config<V: ServerCertVerifier + 'static>(
-    verifier: Arc<V>,
+#[cfg(target_arch = "wasm32")]
+fn get_crypto_provider() -> Arc<CryptoProvider> {
+    Arc::new(ring::default_provider())
+}
+
+fn build_client_config(
+    verifier: Arc<CaVerifier>,
     alpn: Option<Vec<String>>,
 ) -> Arc<ClientConfig> {
     let provider = get_crypto_provider();
@@ -293,9 +396,7 @@ mod tests {
     use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    /// Helper to create a test CA and server certificate pair.
     fn create_test_certs() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
-        // CA certificate
         let mut ca_params = CertificateParams::new(vec!["localhost".into()]);
         ca_params.distinguished_name = DistinguishedName::new();
         ca_params.distinguished_name.push(DnType::CommonName, "Test CA");
@@ -303,7 +404,6 @@ mod tests {
         let ca = Certificate::from_params(ca_params).unwrap();
         let ca_der = ca.serialize_der().unwrap();
 
-        // Server certificate signed by CA
         let mut srv_params = CertificateParams::new(vec!["localhost".into()]);
         srv_params.distinguished_name = DistinguishedName::new();
         srv_params.distinguished_name.push(DnType::CommonName, "localhost");
@@ -318,14 +418,12 @@ mod tests {
     async fn tls_handshake_records_server_cert() {
         let (ca_der, srv_der, srv_key) = create_test_certs();
 
-        // Client: trust our test CA
         let mut root_store = RootCertStore::empty();
         root_store.add(CertificateDer::from(ca_der)).unwrap();
         let verifier = Arc::new(CaVerifier::with_roots(root_store));
         let config = build_client_config(verifier.clone(), Some(vec!["http/1.1".into()]));
         let connector = TlsConnector::from(config);
 
-        // Server: use test certificate
         let server_config = rustls::ServerConfig::builder_with_provider(get_crypto_provider())
             .with_safe_default_protocol_versions()
             .unwrap()
@@ -337,7 +435,6 @@ mod tests {
             .unwrap();
         let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_config));
 
-        // Spawn server
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
@@ -346,7 +443,6 @@ mod tests {
             tls.write_all(b"ok").await.unwrap();
         });
 
-        // Client connects and reads
         let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
         let mut tls = connector
             .connect(ServerName::try_from("localhost").unwrap(), stream)
@@ -356,7 +452,6 @@ mod tests {
         tls.read_exact(&mut buf).await.unwrap();
         server.await.unwrap();
 
-        // Verify the certificate was recorded
         let recorded = verifier.take_cert().expect("certificate should be recorded");
         assert_eq!(recorded, srv_der);
     }
