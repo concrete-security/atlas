@@ -2,6 +2,7 @@ use bytes::Bytes;
 use http::{
     header::{HeaderMap, HeaderName, HeaderValue, HOST},
     Method, Request, Response,
+    uri::Authority,
 };
 use http_body_util::{BodyExt, Full};
 use hyper::body::{Body, Incoming};
@@ -12,9 +13,9 @@ use napi_derive::napi;
 use once_cell::sync::Lazy;
 use ratls_core::{ratls_connect, AttestationResult, Policy};
 use std::collections::HashMap;
-use std::net::ToSocketAddrs;
 use std::sync::atomic::{AtomicU32, Ordering};
-use tokio::net::TcpStream;
+use std::time::{Duration, Instant};
+use tokio::net::{lookup_host, TcpStream};
 use tokio::sync::Mutex;
 use tokio::task;
 
@@ -80,15 +81,12 @@ async fn connect_helper(
     TokioIo<ratls_core::platform::TlsStream<TcpStream>>,
     AttestationResult,
 )> {
-    let addr = target_host.clone();
-    let tcp_addr = task::spawn_blocking(move || {
-        addr.to_socket_addrs()
-            .map_err(|err| Error::from_reason(format!("invalid target host: {err}")))?
-            .next()
-            .ok_or_else(|| Error::from_reason("unable to resolve target host"))
-    })
-    .await
-    .map_err(|err| Error::from_reason(format!("resolver join error: {err}")))??;
+    // Use async DNS resolution instead of blocking to_socket_addrs
+    let tcp_addr = lookup_host(&target_host)
+        .await
+        .map_err(|err| Error::from_reason(format!("invalid target host: {err}")))?
+        .next()
+        .ok_or_else(|| Error::from_reason("unable to resolve target host"))?;
 
     let tcp = TcpStream::connect(tcp_addr)
         .await
@@ -105,7 +103,24 @@ async fn connect_helper(
     .map(|(tls, attestation)| (TokioIo::new(tls), attestation))
 }
 
-fn headers_to_map(headers: Vec<HeaderEntry>, server_name: &str) -> napi::Result<HeaderMap> {
+fn default_host_header(target_host: &str, server_name: &str) -> String {
+    target_host
+        .parse::<Authority>()
+        .map(|authority| match authority.port_u16() {
+            Some(port) if port != 443 => authority.as_str().to_string(),
+            _ => {
+                let host = authority.host();
+                if host.contains(':') {
+                    format!("[{host}]")
+                } else {
+                    host.to_string()
+                }
+            }
+        })
+        .unwrap_or_else(|_| server_name.to_string())
+}
+
+fn headers_to_map(headers: Vec<HeaderEntry>, default_host: &str) -> napi::Result<HeaderMap> {
     let mut map = HeaderMap::with_capacity(headers.len() + 1);
     let mut has_host = false;
 
@@ -119,7 +134,7 @@ fn headers_to_map(headers: Vec<HeaderEntry>, server_name: &str) -> napi::Result<
     }
 
     if !has_host {
-        let value = HeaderValue::from_str(server_name)
+        let value = HeaderValue::from_str(default_host)
             .map_err(|e| Error::from_reason(format!("Invalid host value: {e}")))?;
         map.insert(HOST, value);
     }
@@ -199,7 +214,8 @@ pub async fn http_request(
     headers: Vec<HeaderEntry>,
     body: Option<Buffer>,
 ) -> napi::Result<JsHttpResponse> {
-    let header_map = headers_to_map(headers, &server_name)?;
+    let default_host = default_host_header(&target_host, &server_name);
+    let header_map = headers_to_map(headers, &default_host)?;
     let req = build_hyper_request(method, path, header_map, body)?;
     let (attestation, res) = dispatch_request(target_host, server_name, req).await?;
     let (status, status_text, response_headers) = extract_response_meta(&res);
@@ -219,13 +235,35 @@ pub async fn http_request(
     })
 }
 
+/// Idle timeout for streams - streams not accessed for this duration will be cleaned up
+const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(300); // 5 minutes
+
 struct StreamState {
     incoming: Incoming,
     pending: Bytes,
+    last_accessed: Instant,
 }
 
 static STREAMS: Lazy<Mutex<HashMap<u32, StreamState>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 static STREAM_ID: AtomicU32 = AtomicU32::new(1);
+
+/// Clean up idle streams that haven't been accessed within STREAM_IDLE_TIMEOUT
+async fn cleanup_idle_streams() {
+    let mut guard = STREAMS.lock().await;
+    let now = Instant::now();
+    guard.retain(|stream_id, state| {
+        let idle_duration = now.duration_since(state.last_accessed);
+        if idle_duration > STREAM_IDLE_TIMEOUT {
+            eprintln!(
+                "Cleaning up idle stream {} (idle for {:?})",
+                stream_id, idle_duration
+            );
+            false
+        } else {
+            true
+        }
+    });
+}
 
 #[napi]
 pub async fn http_stream_request(
@@ -236,7 +274,8 @@ pub async fn http_stream_request(
     headers: Vec<HeaderEntry>,
     body: Option<Buffer>,
 ) -> napi::Result<JsStreamingResponse> {
-    let header_map = headers_to_map(headers, &server_name)?;
+    let default_host = default_host_header(&target_host, &server_name);
+    let header_map = headers_to_map(headers, &default_host)?;
     let req = build_hyper_request(method, path, header_map, body)?;
     let (attestation, res) = dispatch_request(target_host, server_name, req).await?;
     let (status, status_text, response_headers) = extract_response_meta(&res);
@@ -258,8 +297,15 @@ pub async fn http_stream_request(
         StreamState {
             incoming,
             pending: Bytes::new(),
+            last_accessed: Instant::now(),
         },
     );
+
+    // Spawn cleanup task periodically
+    task::spawn(async {
+        tokio::time::sleep(STREAM_IDLE_TIMEOUT).await;
+        cleanup_idle_streams().await;
+    });
 
     Ok(JsStreamingResponse {
         attestation: attestation.into(),
@@ -277,6 +323,9 @@ pub async fn stream_read(stream_id: u32, max_bytes: Option<u32>) -> napi::Result
     let Some(state) = guard.get_mut(&stream_id) else {
         return Ok(Buffer::from(Vec::new()));
     };
+
+    // Update last accessed time to prevent idle cleanup
+    state.last_accessed = Instant::now();
 
     if !state.pending.is_empty() {
         let take = state.pending.len().min(limit);
@@ -325,5 +374,27 @@ mod tests {
         assert_eq!(normalize_path(""), "/");
         assert_eq!(normalize_path("foo"), "/foo");
         assert_eq!(normalize_path("/bar"), "/bar");
+    }
+
+    #[test]
+    fn default_host_header_includes_non_default_port() {
+        let host = default_host_header("example.com:8443", "example.com");
+        assert_eq!(host, "example.com:8443");
+    }
+
+    #[test]
+    fn default_host_header_omits_default_port() {
+        let host = default_host_header("example.com:443", "example.com");
+        assert_eq!(host, "example.com");
+    }
+
+    #[test]
+    fn headers_to_map_sets_host_with_port_when_missing() {
+        let host = default_host_header("example.com:8443", "example.com");
+        let headers = headers_to_map(Vec::new(), &host).unwrap();
+        assert_eq!(
+            headers.get(HOST).and_then(|v| v.to_str().ok()),
+            Some("example.com:8443")
+        );
     }
 }
