@@ -1,0 +1,167 @@
+name: Publish Node Package
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (skip npm publish)'
+        type: boolean
+        default: true
+
+env:
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macOS
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            build: |
+              cd node
+              pnpm build --target x86_64-apple-darwin
+              strip -x *.node
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            build: |
+              cd node
+              pnpm build --target aarch64-apple-darwin
+              strip -x *.node
+          # Linux GNU
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            build: |
+              cd node
+              pnpm build --target x86_64-unknown-linux-gnu
+              strip *.node
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            build: |
+              sudo apt-get update
+              sudo apt-get install -y gcc-aarch64-linux-gnu
+              cd node
+              pnpm build --target aarch64-unknown-linux-gnu
+              aarch64-linux-gnu-strip *.node
+          # Linux musl
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            build: |
+              sudo apt-get update
+              sudo apt-get install -y musl-tools
+              cd node
+              pnpm build --target x86_64-unknown-linux-musl
+              strip *.node
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+            build: |
+              sudo apt-get update
+              sudo apt-get install -y gcc-aarch64-linux-gnu musl-tools
+              cd node
+              pnpm build --target aarch64-unknown-linux-musl
+          # Windows
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            build: |
+              cd node
+              pnpm build --target x86_64-pc-windows-msvc
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install dependencies
+        working-directory: node
+        run: pnpm install
+
+      - name: Build native module
+        shell: bash
+        run: ${{ matrix.build }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bindings-${{ matrix.target }}
+          path: node/*.node
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Install dependencies
+        working-directory: node
+        run: pnpm install
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: node/artifacts
+
+      - name: Move artifacts
+        working-directory: node
+        run: pnpm artifacts
+
+      - name: List packages
+        working-directory: node
+        run: ls -la npm/
+
+      - name: Publish (dry run)
+        if: ${{ github.event.inputs.dry_run == 'true' || github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run != 'false' }}
+        working-directory: node
+        run: |
+          echo "Dry run - would publish these packages:"
+          ls -la npm/
+          echo "Main package:"
+          cat package.json | grep -E '"name"|"version"'
+
+      - name: Publish to npm
+        if: ${{ startsWith(github.ref, 'refs/tags/v') || github.event.inputs.dry_run == 'false' }}
+        working-directory: node
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          # Publish platform-specific packages first
+          for dir in npm/*/; do
+            if [ -d "$dir" ]; then
+              echo "Publishing $dir"
+              cd "$dir"
+              npm publish --access public
+              cd ../..
+            fi
+          done
+          # Then publish the main package
+          npm publish --access public

@@ -4,23 +4,36 @@
   "description": "RA-TLS client for Node.js - attested fetch for Trusted Execution Environments",
   "type": "module",
   "main": "./ratls-fetch.js",
-  "types": "./index.d.ts",
+  "types": "./ratls-fetch.d.ts",
   "exports": {
     ".": {
       "types": "./ratls-fetch.d.ts",
       "import": "./ratls-fetch.js",
-      "require": "./ratls-fetch.js"
+      "require": "./ratls-fetch.cjs"
     },
     "./binding": {
       "types": "./index.d.ts",
       "import": "./index.js",
-      "require": "./index.js"
+      "require": "./index.cjs"
+    }
+  },
+  "napi": {
+    "name": "ratls-node",
+    "triples": {
+      "defaults": true,
+      "additional": [
+        "aarch64-apple-darwin",
+        "aarch64-unknown-linux-gnu",
+        "aarch64-unknown-linux-musl"
+      ]
     }
   },
   "files": [
     "index.js",
+    "index.cjs",
     "index.d.ts",
     "ratls-fetch.js",
+    "ratls-fetch.cjs",
     "ratls-fetch.d.ts"
   ],
   "keywords": [
@@ -31,7 +44,8 @@
     "attestation",
     "confidential-computing",
     "fetch",
-    "tls"
+    "tls",
+    "napi-rs"
   ],
   "engines": {
     "node": ">=18"
@@ -39,16 +53,31 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/zama-ai/secure-chat",
-    "directory": "frontend/ratls/node"
+    "directory": "node"
   },
   "license": "MIT",
   "scripts": {
-    "test": "node test.mjs"
+    "build": "napi build --platform --release",
+    "build:debug": "napi build --platform",
+    "prepublishOnly": "napi prepublish -t npm",
+    "artifacts": "napi artifacts",
+    "test": "node test.mjs",
+    "universal": "napi universal -t @ratls-node"
   },
   "devDependencies": {
     "@ai-sdk/openai": "^2.0.76",
+    "@napi-rs/cli": "^2.18.4",
     "ai": "^5.0.106",
     "ws": "^8.18.3",
     "zod": "^4.1.13"
+  },
+  "optionalDependencies": {
+    "@ratls-node/darwin-arm64": "0.1.0",
+    "@ratls-node/darwin-x64": "0.1.0",
+    "@ratls-node/linux-arm64-gnu": "0.1.0",
+    "@ratls-node/linux-arm64-musl": "0.1.0",
+    "@ratls-node/linux-x64-gnu": "0.1.0",
+    "@ratls-node/linux-x64-musl": "0.1.0",
+    "@ratls-node/win32-x64-msvc": "0.1.0"
   }
 }

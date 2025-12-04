@@ -2,6 +2,17 @@
 
 Attested TLS connections for Node.js. Connect directly to Trusted Execution Environments (TEEs) with cryptographic proof of their integrity.
 
+## Installation
+
+```bash
+npm install ratls-node
+```
+
+The package automatically installs the correct prebuilt binary for your platform:
+- macOS (x64, arm64)
+- Linux (x64, arm64) with glibc or musl
+- Windows (x64)
+
 ## Quick Start
 
 ```typescript
@@ -138,6 +149,62 @@ cargo build -p ratls-node --release
 # Run the demo
 node examples/ai-sdk-openai-demo.mjs "Hello from RA-TLS"
 ```
+
+### Using napi-rs CLI
+
+For development with hot-reload or to build platform-specific binaries:
+
+```bash
+cd node
+pnpm install
+pnpm build          # Build for current platform (release)
+pnpm build:debug    # Build for current platform (debug)
+```
+
+## Publishing to npm
+
+The package uses [@napi-rs/cli](https://napi.rs) for cross-platform native module distribution.
+
+### Automated Publishing (CI)
+
+1. Add `NPM_TOKEN` secret to your GitHub repository settings
+2. Create and push a version tag:
+
+```bash
+git tag v0.1.0
+git push --tags
+```
+
+The GitHub Actions workflow will:
+- Build native binaries for all platforms (macOS, Linux, Windows)
+- Publish platform-specific packages (`@ratls-node/darwin-arm64`, etc.)
+- Publish the main `ratls-node` package
+
+### Manual Publishing
+
+```bash
+# Dry run from GitHub Actions UI
+# Go to Actions → "Publish Node Package" → Run workflow → Enable "Dry run"
+
+# Or publish locally (single platform only)
+cd node
+pnpm build
+npm publish
+```
+
+### Platform Packages
+
+The main package has optional dependencies on platform-specific packages:
+
+| Package | Platform |
+|---------|----------|
+| `@ratls-node/darwin-arm64` | macOS Apple Silicon |
+| `@ratls-node/darwin-x64` | macOS Intel |
+| `@ratls-node/linux-x64-gnu` | Linux x64 (glibc) |
+| `@ratls-node/linux-x64-musl` | Linux x64 (musl/Alpine) |
+| `@ratls-node/linux-arm64-gnu` | Linux ARM64 (glibc) |
+| `@ratls-node/linux-arm64-musl` | Linux ARM64 (musl/Alpine) |
+| `@ratls-node/win32-x64-msvc` | Windows x64 |
 
 ## HTTP Stack & Streaming
 
