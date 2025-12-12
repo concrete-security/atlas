@@ -49,7 +49,7 @@ struct SocketState {
 }
 
 static SOCKETS: Lazy<Mutex<HashMap<u32, SocketState>>> = Lazy::new(|| Mutex::new(HashMap::new()));
-static SOCKET_ID: AtomicU32 = AtomicU32::new(1);
+static NEXT_SOCKET_ID: AtomicU32 = AtomicU32::new(1);
 
 /// Establish an RATLS connection and return a socket handle with attestation result
 #[napi(js_name = "ratlsConnect")]
@@ -73,7 +73,7 @@ pub async fn ratls_connect(target_host: String, server_name: String) -> napi::Re
     .await
     .map_err(|err| Error::from_reason(format!("ratls handshake failed: {err}")))?;
 
-    let socket_id = SOCKET_ID.fetch_add(1, Ordering::SeqCst);
+    let socket_id = NEXT_SOCKET_ID.fetch_add(1, Ordering::SeqCst);
     let (reader, writer) = tokio::io::split(tls);
     SOCKETS.lock().await.insert(
         socket_id,
@@ -177,8 +177,8 @@ mod tests {
 
     #[test]
     fn socket_id_increments() {
-        let id1 = SOCKET_ID.fetch_add(1, Ordering::SeqCst);
-        let id2 = SOCKET_ID.fetch_add(1, Ordering::SeqCst);
+        let id1 = NEXT_SOCKET_ID.fetch_add(1, Ordering::SeqCst);
+        let id2 = NEXT_SOCKET_ID.fetch_add(1, Ordering::SeqCst);
         assert!(id2 > id1);
     }
 }
