@@ -32,39 +32,6 @@ struct DstackQuote {
     event_log: Value,
 }
 
-/// Validates that the attestation endpoint path is safe to use in HTTP requests.
-fn validate_endpoint_path(path: &str) -> Result<(), RatlsError> {
-    // Prevent CRLF injection
-    if path.contains('\r') || path.contains('\n') || path.contains('\0') {
-        return Err(RatlsError::Policy(
-            "Endpoint path contains invalid control characters".into(),
-        ));
-    }
-
-    // Ensure path starts with /
-    if !path.starts_with('/') {
-        return Err(RatlsError::Policy(
-            "Endpoint path must start with /".into(),
-        ));
-    }
-
-    // Prevent path traversal
-    if path.contains("../") || path.contains("/..") {
-        return Err(RatlsError::Policy(
-            "Path traversal sequences not allowed in endpoint path".into(),
-        ));
-    }
-
-    // Reject paths that are suspiciously long
-    if path.len() > 1024 {
-        return Err(RatlsError::Policy(
-            "Endpoint path is too long".into(),
-        ));
-    }
-
-    Ok(())
-}
-
 pub async fn verify_attestation_stream<S>(
     stream: &mut TlsStream<S>,
     server_cert: &[u8],
@@ -74,8 +41,6 @@ pub async fn verify_attestation_stream<S>(
 where
     S: AsyncByteStream,
 {
-    validate_endpoint_path(&endpoint.path)?;
-
     let mut nonce = [0u8; 32];
     OsRng.fill_bytes(&mut nonce);
     let nonce_hex = hex::encode(nonce);
@@ -181,48 +146,4 @@ where
     tdx::verify_tls_certificate_in_log(&event_log, server_cert)?;
 
     Ok(attestation)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_validate_endpoint_path_valid() {
-        // Valid paths should pass
-        assert!(validate_endpoint_path("/tdx_quote").is_ok());
-        assert!(validate_endpoint_path("/api/v1/attestation").is_ok());
-        assert!(validate_endpoint_path("/path-with_underscores.json").is_ok());
-    }
-
-    #[test]
-    fn test_validate_endpoint_path_crlf_injection() {
-        // CRLF injection attempts should be rejected
-        assert!(validate_endpoint_path("/tdx_quote\r\n").is_err());
-        assert!(validate_endpoint_path("/tdx_quote\r\nX-Evil: header").is_err());
-        assert!(validate_endpoint_path("/path\nwith\nnewlines").is_err());
-        assert!(validate_endpoint_path("/path\0null").is_err());
-    }
-
-    #[test]
-    fn test_validate_endpoint_path_traversal() {
-        // Path traversal attempts should be rejected
-        assert!(validate_endpoint_path("/../etc/passwd").is_err());
-        assert!(validate_endpoint_path("/api/../admin").is_err());
-        assert!(validate_endpoint_path("/path/../../sensitive").is_err());
-    }
-
-    #[test]
-    fn test_validate_endpoint_path_missing_slash() {
-        // Paths must start with /
-        assert!(validate_endpoint_path("tdx_quote").is_err());
-        assert!(validate_endpoint_path("api/v1").is_err());
-    }
-
-    #[test]
-    fn test_validate_endpoint_path_too_long() {
-        // Very long paths should be rejected
-        let long_path = format!("/{}", "a".repeat(1024));
-        assert!(validate_endpoint_path(&long_path).is_err());
-    }
 }
