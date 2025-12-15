@@ -1,0 +1,157 @@
+name: Publish Node Package
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (skip npm publish)'
+        type: boolean
+        default: true
+
+env:
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: x86_64-apple-darwin
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: node
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Linux dependencies
+        if: ${{ runner.os == 'Linux' }}
+        shell: bash
+        run: |
+          sudo apt-get update
+          pkgs=()
+          if [[ "${{ matrix.target }}" == aarch64-unknown-linux-* ]]; then
+            pkgs+=("gcc-aarch64-linux-gnu")
+          fi
+          if [[ "${{ matrix.target }}" == *-unknown-linux-musl ]]; then
+            pkgs+=("musl-tools")
+          fi
+          if [ ${#pkgs[@]} -gt 0 ]; then
+            sudo apt-get install -y "${pkgs[@]}"
+          fi
+
+      - name: Build native module
+        shell: bash
+        run: pnpm build --target ${{ matrix.target }}
+
+      - name: Strip native module
+        if: ${{ runner.os != 'Windows' }}
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            strip -x *.node
+          elif [[ "${{ matrix.target }}" == aarch64-unknown-linux-* ]]; then
+            aarch64-linux-gnu-strip *.node
+          else
+            strip *.node
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bindings-${{ matrix.target }}
+          path: node/*.node
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: node
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: node/artifacts
+
+      - name: Move artifacts
+        run: pnpm artifacts
+
+      - name: List packages
+        run: ls -la npm/
+
+      - name: Publish (dry run)
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run != 'false' }}
+        run: |
+          echo "Dry run - would publish these packages:"
+          ls -la npm/
+          echo "Main package:"
+          cat package.json | grep -E '"name"|"version"'
+
+      - name: Publish to npm
+        if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'false') }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          for dir in npm/*/; do
+            if [ -d "$dir" ]; then
+              echo "Publishing $dir"
+              cd "$dir"
+              npm publish --access public
+              cd ../..
+            fi
+          done
+          npm publish --access public
