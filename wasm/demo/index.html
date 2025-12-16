@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RA-TLS AI Demo</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 20px;
+      background: #f5f5f5;
+    }
+    h1 { margin-bottom: 8px; }
+    .subtitle { color: #666; margin-bottom: 24px; }
+    .config {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    .config label {
+      display: block;
+      font-size: 12px;
+      color: #666;
+      margin-bottom: 4px;
+    }
+    .config input {
+      width: 100%;
+      padding: 8px 12px;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      font-size: 14px;
+    }
+    .config input:focus {
+      outline: none;
+      border-color: #0066cc;
+    }
+    #attestation {
+      padding: 12px 16px;
+      border-radius: 8px;
+      margin-bottom: 16px;
+      font-size: 14px;
+      background: #e8e8e8;
+      color: #666;
+    }
+    #attestation.trusted {
+      background: #d4edda;
+      color: #155724;
+    }
+    #attestation.untrusted {
+      background: #f8d7da;
+      color: #721c24;
+    }
+    #attestation .status {
+      font-weight: 600;
+      margin-right: 12px;
+    }
+    #attestation .details {
+      font-size: 12px;
+      opacity: 0.8;
+    }
+    textarea {
+      width: 100%;
+      padding: 12px;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      font-size: 14px;
+      resize: vertical;
+      min-height: 80px;
+      font-family: inherit;
+    }
+    textarea:focus {
+      outline: none;
+      border-color: #0066cc;
+    }
+    .actions {
+      display: flex;
+      gap: 12px;
+      margin-top: 12px;
+    }
+    button {
+      padding: 10px 24px;
+      border: none;
+      border-radius: 6px;
+      font-size: 14px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    #send {
+      background: #0066cc;
+      color: white;
+    }
+    #send:hover { background: #0052a3; }
+    #send:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+    }
+    #clear {
+      background: #e8e8e8;
+      color: #333;
+    }
+    #clear:hover { background: #ddd; }
+    #response {
+      margin-top: 20px;
+      padding: 16px;
+      background: white;
+      border-radius: 8px;
+      border: 1px solid #ddd;
+      min-height: 120px;
+      white-space: pre-wrap;
+      font-family: inherit;
+      line-height: 1.5;
+    }
+    #response.empty {
+      color: #999;
+      font-style: italic;
+    }
+    #response .error {
+      color: #dc3545;
+    }
+    .loading {
+      display: inline-block;
+      width: 12px;
+      height: 12px;
+      border: 2px solid #0066cc;
+      border-top-color: transparent;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin-left: 8px;
+      vertical-align: middle;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    .instructions {
+      margin-top: 24px;
+      padding: 16px;
+      background: #fff3cd;
+      border-radius: 8px;
+      font-size: 13px;
+      color: #856404;
+    }
+    .instructions code {
+      background: rgba(0,0,0,0.1);
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <h1>RA-TLS Browser Demo</h1>
+  <p class="subtitle">Secure AI inference with hardware attestation</p>
+
+  <div class="config">
+    <div>
+      <label for="proxy">WebSocket Proxy URL</label>
+      <input type="text" id="proxy" value="ws://127.0.0.1:9000" placeholder="wss://proxy.example.com">
+    </div>
+    <div>
+      <label for="target">Target TEE Server</label>
+      <input type="text" id="target" value="vllm.concrete-security.com:443" placeholder="host:port">
+    </div>
+    <div>
+      <label for="model">Model</label>
+      <input type="text" id="model" value="openai/gpt-oss-120b" placeholder="model name">
+    </div>
+    <div>
+      <label for="apiKey">API Key</label>
+      <input type="password" id="apiKey" placeholder="Enter your API key">
+    </div>
+  </div>
+
+  <div id="attestation">
+    <span class="status">Waiting for connection...</span>
+  </div>
+
+  <textarea id="prompt" placeholder="Enter your prompt...">Say hello from the browser with RA-TLS!</textarea>
+
+  <div class="actions">
+    <button id="send">Send</button>
+    <button id="clear">Clear</button>
+  </div>
+
+  <div id="response" class="empty">Response will appear here...</div>
+
+  <div class="instructions">
+    <strong>Setup:</strong> Start the proxy with:
+    <code>RATLS_PROXY_ALLOWLIST="vllm.concrete-security.com:443" cargo run -p ratls-proxy</code>
+  </div>
+
+  <script type="module" src="ai-sdk-demo.js"></script>
+</body>
+</html>

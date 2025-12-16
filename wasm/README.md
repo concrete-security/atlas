@@ -1,51 +1,126 @@
 # wasm (browser client)
 
-wasm-bindgen wrapper around the Rust core to expose a TypeScript-friendly API for browsers. Carries TLS 1.3 inside WASM and uses WebSocket/WebTransport tunnels.
+WASM bindings for RA-TLS attested connections. The module performs TLS 1.3 inside WASM and uses WebSocket tunnels via a proxy.
 
-## Targets
-- Expose `run_attestation_check(url, server_name)` for quick diagnostics.
-- Provide `httpRequest` for HTTP/1.1 over RA-TLS with streaming bodies.
-- Implement WebSocket transport (binary frames) first; abstract to allow WebTransport later.
-- Use `crypto.getRandomValues` for RNG seeding; rely on `Date.now` for wall clock.
+## Architecture
 
-## Building the bindings
+The WASM module focuses on **attested TLS only**. HTTP handling is done in JavaScript for simplicity.
 
-The crate is set up for `wasm-pack`:
-
-```sh
-cd ratls/wasm
-wasm-pack build --target web --out-dir pkg
+```
+Browser (ratls-fetch.js)          WASM (ratls_wasm)           Proxy              TEE
+        │                               │                       │                  │
+        │──── AttestedStream.connect ──►│                       │                  │
+        │                               │──── WebSocket ───────►│                  │
+        │                               │                       │──── TCP ────────►│
+        │                               │◄──── TLS handshake + attestation ───────►│
+        │◄─── attestation result ───────│                       │                  │
+        │                               │                       │                  │
+        │──── stream.write(request) ───►│──── encrypted ───────►│──── raw ────────►│
+        │◄─── stream.read() ────────────│◄──── encrypted ───────│◄──── raw ────────│
 ```
 
-You can also run `make build-wasm` (or `./build-wasm.sh`) from the repo root, which wraps the same command and accepts the usual `WASM_TARGET`/`WASM_OUT_DIR` overrides.
+## Building
 
-This produces `pkg/ratls_wasm.{js,wasm}`. Building on macOS requires a Clang toolchain with WebAssembly targets enabled (e.g. `brew install llvm` and make sure `clang --target=wasm32-unknown-unknown` works). If your default Xcode clang lacks the wasm backend the build will fail before linking `ring`.
+```bash
+# From repo root
+make build-wasm
 
-### Using the bindings
+# Or directly
+cd wasm && wasm-pack build --target web --out-dir pkg
+```
 
-Once the bundle is built you can import it from any ESM environment (Next.js, plain `<script type="module">`, etc.):
+**macOS note:** Requires Clang with WebAssembly target support:
+```bash
+brew install llvm
+CC=/opt/homebrew/opt/llvm/bin/clang ./build-wasm.sh
+```
 
-```ts
-import init, { httpRequest, run_attestation_check } from "ratls-wasm";
+## API
 
-await init(); // load the wasm module
+### Low-level: `AttestedStream`
 
-// 1. Fire-and-forget attestation check (returns the AttestationResult JSON)
-const attestation = await run_attestation_check("ws://secure-enclave.com:443", "secure-enclave.com");
-console.log(attestation);
+Direct access to the attested TLS stream:
 
-// 2. Manual HTTP/1.1 over RA-TLS with a streaming body
-const ratlsResponse = await httpRequest(
-  "ws://secure-enclave.com:443",
-  "secure-enclave.com",
-  "secure-enclave.com:443", // Host header
-  "POST",
-  "/v1/chat/completions?stream=true",
-  [{ name: "Content-Type", value: "application/json" }],
-  new TextEncoder().encode(JSON.stringify({ hello: "world" }))
+```typescript
+import init, { AttestedStream } from "ratls-wasm";
+
+await init();
+
+// Connect via proxy and perform RA-TLS handshake
+const stream = await AttestedStream.connect(
+  "ws://127.0.0.1:9000?target=vllm.example.com:443",
+  "vllm.example.com"
 );
-// Read with await ratlsResponse.readChunk() until it returns an empty Uint8Array, then await ratlsResponse.close().
-// ratlsResponse.attestation() gives you the attestation result for logging/metrics.
+
+// Check attestation
+const att = stream.attestation();
+console.log(att.trusted, att.teeType, att.tcbStatus);
+
+// Read/write raw bytes
+await stream.write(new TextEncoder().encode("GET / HTTP/1.1\r\n\r\n"));
+const response = await stream.read(8192);
+
+// Close when done
+await stream.close();
 ```
 
-`run_attestation_check` is ideal for diagnostics (fetch quote → verify → close). `httpRequest` returns a `RatlsResponse` that exposes `status`, `statusText`, `headers()`, `readChunk()`, and `close()` for streaming use cases.
+### High-level: `createRatlsFetch()`
+
+Fetch-compatible API with HTTP handling in JavaScript:
+
+```typescript
+import init from "ratls-wasm";
+import { createRatlsFetch } from "ratls-wasm/ratls-fetch.js";
+
+await init();
+
+const ratlsFetch = createRatlsFetch({
+  proxyUrl: "ws://127.0.0.1:9000",
+  targetHost: "vllm.example.com:443",
+  onAttestation: (att) => {
+    console.log(`TEE verified: ${att.teeType}, trusted: ${att.trusted}`);
+  }
+});
+
+// Use like regular fetch
+const response = await ratlsFetch("/v1/chat/completions", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ model: "gpt", messages: [...] })
+});
+
+// Standard Response API
+console.log(response.status);
+const data = await response.json();
+
+// Attestation attached to response
+console.log(response.attestation);
+```
+
+## Proxy
+
+The `proxy/` directory contains a WebSocket-to-TCP forwarder:
+
+```bash
+# Required: set allowlist for security
+export RATLS_PROXY_ALLOWLIST="vllm.example.com:443,other.tee.com:443"
+export RATLS_PROXY_LISTEN="127.0.0.1:9000"
+
+cargo run -p ratls-proxy
+```
+
+The proxy just forwards bytes - it doesn't terminate TLS. All encryption and attestation verification happens in the browser.
+
+## Demo
+
+A browser demo is included in `demo/`:
+
+```bash
+# Terminal 1: Start proxy
+RATLS_PROXY_ALLOWLIST="vllm.concrete-security.com:443" cargo run -p ratls-proxy
+
+# Terminal 2: Serve demo
+cd wasm && python3 -m http.server 8080
+
+# Browser: http://localhost:8080/demo/
+```

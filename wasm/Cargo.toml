@@ -5,16 +5,19 @@ edition = "2021"
 license = "MIT"
 
 [lib]
-crate-type = ["rlib", "cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 ratls-core = { path = "../core" }
 futures = "0.3"
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
-web-sys = { version = "0.3", features = ["WebSocket", "BinaryType", "MessageEvent", "ErrorEvent", "Event"] }
-js-sys = "0.3"
-thiserror = { workspace = true }
 serde = { workspace = true }
 serde-wasm-bindgen = "0.6"
-serde_json = { workspace = true }
+
+[dependencies.web-sys]
+version = "0.3"
+features = ["WebSocket", "BinaryType", "MessageEvent", "Event"]
+
+[dependencies.js-sys]
+version = "0.3"
