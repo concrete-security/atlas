@@ -24,20 +24,12 @@ Browser (ratls-fetch.js)          WASM (ratls_wasm)           Proxy             
 ```bash
 # From repo root
 make build-wasm
-
-# Or directly
-cd wasm && wasm-pack build --target web --out-dir pkg
 ```
 
-**macOS note:** Requires Clang with WebAssembly target support (Apple's Xcode clang doesn't support WASM):
+**macOS note:** Requires Clang with WebAssembly target support (Apple's Xcode clang doesn't support WASM). The build process automatically detects and uses Homebrew's LLVM if available. If you haven't installed it yet:
+
 ```bash
-brew install llvm
-
-# Set environment variables for the build
-export CC=/opt/homebrew/opt/llvm/bin/clang
-export AR=/opt/homebrew/opt/llvm/bin/llvm-ar
-
-# Then build
+make setup-wasm
 make build-wasm
 ```
 

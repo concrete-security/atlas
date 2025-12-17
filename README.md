@@ -161,4 +161,4 @@ Server responds:
 
 ## Troubleshooting WASM Builds
 - Errors like `rust-lld: error: unknown file type` typically mean LLVM/Clang lacks `wasm32` support.
-- Run `./setup-wasm-toolchain.sh` on macOS to install a compatible LLVM via Homebrew, then re-run the build.
+- On macOS, run `make setup-wasm` to install a compatible LLVM via Homebrew, then re-run `make build-wasm`.

@@ -1,4 +1,4 @@
-.PHONY: help test test-all test-wasm test-wasm-node test-proxy build build-wasm build-node test-node clean demo-wasm
+.PHONY: help test test-all test-wasm test-wasm-node test-proxy build build-wasm build-node test-node clean demo-wasm setup-wasm
 
 CARGO ?= cargo
 DEMO_PORT ?= 8080
@@ -15,6 +15,7 @@ help:
 	@echo "  make build          # build all native crates"
 	@echo "  make build-wasm     # build WASM package with wasm-pack"
 	@echo "  make build-node     # build Node.js native bindings"
+	@echo "  make setup-wasm     # setup WASM toolchain (macOS only)"
 	@echo ""
 	@echo "  make demo-wasm      # run proxy + serve demo at http://localhost:$(DEMO_PORT)/demo/"
 	@echo ""
@@ -47,9 +48,27 @@ test-all: test test-wasm test-node
 build:
 	$(CARGO) build --workspace --exclude ratls-wasm
 
-# Build WASM package
+# Setup WASM toolchain (macOS only - installs LLVM with wasm32 support)
+setup-wasm:
+	@if [ "$$(uname)" = "Darwin" ]; then \
+		echo "Installing LLVM with WASM support via Homebrew..."; \
+		brew install llvm; \
+		echo ""; \
+		echo "Done! Now run: make build-wasm"; \
+	else \
+		echo "Linux detected - no additional setup needed"; \
+	fi
+
+# Build WASM package (auto-detects macOS LLVM)
 build-wasm:
-	wasm/build-wasm.sh
+	@command -v wasm-pack >/dev/null || { echo "Error: wasm-pack not found. Install via 'cargo install wasm-pack'"; exit 1; }
+	@if [ "$$(uname)" = "Darwin" ] && [ -d "$$(brew --prefix llvm 2>/dev/null)" ]; then \
+		export CC="$$(brew --prefix llvm)/bin/clang"; \
+		export AR="$$(brew --prefix llvm)/bin/llvm-ar"; \
+	fi; \
+	cd wasm && wasm-pack build --target web --out-dir pkg
+	@cp -f wasm/src/ratls-fetch.js wasm/pkg/ 2>/dev/null || true
+	@cp -f wasm/src/ratls-fetch.d.ts wasm/pkg/ 2>/dev/null || true
 
 # Build Node.js bindings
 build-node:
