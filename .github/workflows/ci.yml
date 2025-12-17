@@ -24,7 +24,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: Run proxy unit tests
-        run: cargo test -p ratls-proxy --lib
+        run: cargo test -p ratls-proxy
       - name: Run proxy integration tests
         run: cargo test -p ratls-proxy --test integration
 
