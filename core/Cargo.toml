@@ -3,7 +3,11 @@ name = "ratls-core"
 version = "0.0.1"
 edition = "2021"
 license = "MIT"
-publish = false
+description = "Remote Attestation TLS (RA-TLS) core library for verifying TEE attestations over TLS connections"
+repository = "https://github.com/concrete-security/ratls"
+readme = "README.md"
+keywords = ["tls", "attestation", "tee", "tdx", "confidential-computing", "ratls"]
+categories = ["cryptography", "network-programming", "security"]
 
 [dependencies]
 serde = { workspace = true }
