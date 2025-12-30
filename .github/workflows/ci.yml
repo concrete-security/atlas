@@ -64,3 +64,19 @@ jobs:
         working-directory: node
         run: npm test
 
+  test-python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@2ddd2b9cb38ad8efd50337e8ab201519a34c9f24 # v7
+
+      - name: Install dependencies
+        working-directory: python
+        run: |
+          uv sync --all-groups
+
+      - name: Run python tests
+        working-directory: python
+        run: uv run pytest -v
