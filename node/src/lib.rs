@@ -2,7 +2,9 @@ use bytes::{Bytes, BytesMut};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use once_cell::sync::Lazy;
-use ratls_core::{ratls_connect as core_ratls_connect, AttestationResult, Policy};
+use ratls_core::{
+    ratls_connect as core_ratls_connect, Policy, TlsStream as CoreTlsStream, VerifiedReport,
+};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
@@ -22,14 +24,14 @@ pub struct JsAttestation {
     pub advisory_ids: Vec<String>,
 }
 
-impl From<AttestationResult> for JsAttestation {
-    fn from(value: AttestationResult) -> Self {
+impl From<VerifiedReport> for JsAttestation {
+    fn from(report: VerifiedReport) -> Self {
         Self {
-            trusted: value.trusted,
-            tee_type: format!("{:?}", value.tee_type).to_lowercase(),
-            measurement: value.measurement,
-            tcb_status: value.tcb_status,
-            advisory_ids: value.advisory_ids,
+            trusted: true, // Success implies trusted
+            tee_type: "tdx".to_string(),
+            measurement: None, // VerifiedReport doesn't expose this directly
+            tcb_status: report.status.clone(),
+            advisory_ids: report.advisory_ids.clone(),
         }
     }
 }
@@ -41,7 +43,7 @@ pub struct JsRatlsConnection {
     pub attestation: JsAttestation,
 }
 
-type TlsStream = ratls_core::platform::TlsStream<TcpStream>;
+type TlsStream = CoreTlsStream<TcpStream>;
 
 struct SocketState {
     reader: Arc<Mutex<ReadHalf<TlsStream>>>,
@@ -64,7 +66,7 @@ pub async fn ratls_connect(target_host: String, server_name: String) -> napi::Re
         .await
         .map_err(|err| Error::from_reason(format!("tcp connect failed: {err}")))?;
 
-    let (tls, attestation) = core_ratls_connect(
+    let (tls, report) = core_ratls_connect(
         tcp,
         &server_name,
         Policy::default(),
@@ -85,7 +87,7 @@ pub async fn ratls_connect(target_host: String, server_name: String) -> napi::Re
 
     Ok(JsRatlsConnection {
         socket_id,
-        attestation: attestation.into(),
+        attestation: report.into(),
     })
 }
 
