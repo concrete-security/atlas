@@ -27,8 +27,8 @@ Browsers lack raw TCP sockets and attestation primitives. The toolkit uses WebSo
 
 ## `core/`
 - `ratls_connect`: Handshake + verification over a generic async byte stream.
-- `PromiscuousVerifier`: Accepts any X.509 initially, captures leaf cert for post-handshake validation.
-- `TdxTcbPolicy`: Encodes acceptable TDX TCB levels and measurements.
+- `RatlsVerifier` trait: Extensible verification interface for different TEE types.
+- `DstackTdxPolicy`: Configures TDX verification including bootchain, app compose, and TCB status.
 
 ## `wasm/`
 - `RatlsHttp`: HTTP client over attested TLS with chunked transfer encoding support.
@@ -69,44 +69,44 @@ console.log(response.attestation); // { trusted: true, teeType: "Tdx", ... }
 
 # 4. Policy Configuration
 
-Policies describe what constitutes an acceptable attestation. The `ratls-core` API (and each binding) consumes a `Policy` struct with the following shape:
+Policies describe what constitutes an acceptable attestation. The `ratls-core` API (and each binding) consumes a `Policy` enum with the following shape:
 
 ```json
 {
-  "tee_type": "Tdx",
-  "allowed_tdx_status": ["UpToDate", "SWHardeningNeeded"],
-  "minimum_tcb": {
-    "svn": 3,
-    "mrseam": "hex bytes",
-    "mrtd": "hex bytes"
+  "type": "dstack_tdx",
+  "allowed_tcb_status": ["UpToDate", "SWHardeningNeeded"],
+  "expected_bootchain": {
+    "mrtd": "hex...",
+    "rtmr0": "hex...",
+    "rtmr1": "hex...",
+    "rtmr2": "hex..."
   },
-  "advisories_blocklist": ["INTEL-SA-00999"],
-  "allow_debug": false,
-  "expected_measurements": [
-    {
-      "rtmr_index": 3,
-      "sha256": "hex bytes for TLS key binding event"
-    }
-  ]
+  "app_compose": {
+    "runner": "docker-compose",
+    "docker_compose_file": "..."
+  },
+  "os_image_hash": "hex...",
+  "pccs_url": "https://pccs.phala.network/tdx/certification/v4"
 }
 ```
 
 | Field | Purpose |
 | --- | --- |
-| `tee_type` | Chooses the verifier backend (`Tdx`, `Snp`, etc.). |
-| `allowed_tdx_status` | Acceptable `TD_REPORT.STATUS` strings (e.g., `UpToDate`). |
-| `minimum_tcb` | Lower bounds for SVN plus MRSEAM/MRTD digests to block downgraded builds. |
-| `advisories_blocklist` | Rejects quotes referencing these advisory IDs. |
-| `allow_debug` | Permits debug TEEs when `true` (default `false`). |
-| `expected_measurements` | Optional event/measurement checks, including TLS key hash binding. |
+| `type` | Chooses the verifier backend (`dstack_tdx`). |
+| `allowed_tcb_status` | Acceptable TCB status strings (e.g., `UpToDate`, `SWHardeningNeeded`). |
+| `expected_bootchain` | Expected MRTD and RTMR0-2 measurements for bootchain verification. |
+| `app_compose` | Expected application compose configuration (hash verified). |
+| `os_image_hash` | Expected OS image hash (SHA256). |
+| `pccs_url` | Intel PCCS URL for collateral fetching. |
 
 Verification flow with a policy:
-1. Confirm the quote matches `tee_type`.
-2. Ensure the reported status is in `allowed_tdx_status`.
-3. Compare SVN and measurement digests to `minimum_tcb`.
-4. Verify no blocked advisories are reported.
-5. Enforce `allow_debug`.
-6. Recalculate listed measurements (e.g., TLS pubkey hash in RTMR3) and compare to `expected_measurements`.
+1. Perform TLS handshake and capture server certificate.
+2. Fetch TDX quote from server via `/tdx_quote` endpoint.
+3. Verify DCAP quote signature using Intel PCS collateral.
+4. Check TCB status is in `allowed_tcb_status`.
+5. Verify certificate is bound in the event log.
+6. Replay event log to verify RTMR3.
+7. If configured, verify bootchain (MRTD, RTMR0-2), app compose hash, and OS image hash.
 
 ---
 

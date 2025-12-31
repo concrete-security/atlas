@@ -1,0 +1,109 @@
+services:
+  vllm:
+    image: vllm/vllm-openai:v0.13.0
+    container_name: vllm
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+    volumes:
+      - huggingface-cache:/root/.cache/huggingface
+    runtime: nvidia
+    # No external ports - internal access only
+    expose:
+      - "8000"
+    networks:
+      - vllm
+    command: >
+      --model openai/gpt-oss-120b
+      --tensor-parallel-size 1
+      --gpu-memory-utilization 0.95
+      --max-model-len 131072
+      --max-num-seqs 8
+      --reasoning-parser openai_gptoss
+      --enable-auto-tool-choice
+      --tool-call-parser openai
+      --async-scheduling
+      --allowed-origins []
+    restart: unless-stopped
+    healthcheck:
+      start_interval: 1h30m # Allow up to 90 minutes for initial model loading
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Combined Nginx reverse proxy and Certificate Manager
+  nginx-cert-manager:
+    image: ghcr.io/concrete-security/cert-manager@sha256:92655a24060497516ea0cfd79b7fbfb599f13d303eb0c3e9c79cf8c5ee9cc1d1
+    container_name: nginx-cert-manager
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - DOMAIN=vllm.concrete-security.com
+      - DEV_MODE=false
+      - LETSENCRYPT_STAGING=false
+      # Used to versionize accounts: can change account by using another env variable
+      # Useful in case an account reaches a rate limit
+      - LETSENCRYPT_ACCOUNT_VERSION=v1
+      # Force removal of existing certificate files on startup
+      - FORCE_RM_CERT_FILES=false
+      # Set log level
+      - LOG_LEVEL=INFO
+    volumes:
+      - tls-certs-keys:/etc/nginx/ssl/
+      - /var/run/dstack.sock:/var/run/dstack.sock
+    networks:
+      - vllm
+      - attestation
+      - auth
+    restart: unless-stopped
+
+  # Auth service for protected endpoints
+  auth-service:
+    image: ghcr.io/concrete-security/auth-service@sha256:f819c57d1648a4b4340fc296ef9872e43b70c7190d67a93820cf4f7b657d5310
+    container_name: auth-service
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8081
+      - AUTH_SERVICE_TOKEN=${AUTH_SERVICE_TOKEN}
+      - LOG_LEVEL=INFO
+    expose:
+      - "8081"
+    networks:
+      - auth
+    restart: unless-stopped
+
+  # TDX Attestation service
+  attestation-service:
+    image: ghcr.io/concrete-security/attestation-service@sha256:ad98abfe2d97fd2f25beba4a7e343376bce2ac0e8c3ed2ded97b38b06df12841
+    container_name: attestation-service
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8080
+      # Keep it to 1 if you want replication at the container orchestration level (see deploy.replicas)
+      - WORKERS=1
+    volumes:
+      - /var/run/dstack.sock:/var/run/dstack.sock
+    expose:
+      - "8080"
+    networks:
+      - attestation
+    restart: unless-stopped
+    deploy:
+      mode: replicated
+      # Keep it to 1 if you want replication at the process level (see env.WORKERS)
+      replicas: 1
+
+networks:
+  vllm:
+    driver: bridge
+  attestation:
+    driver: bridge
+  auth:
+    driver: bridge
+
+volumes:
+  # Used to store huggingface models
+  huggingface-cache:
+  # TLS certificates and keys
+  tls-certs-keys:
