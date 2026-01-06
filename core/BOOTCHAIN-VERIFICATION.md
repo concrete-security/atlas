@@ -74,9 +74,11 @@ See the [Computing Measurements](#computing-measurements-for-new-dstack-versions
 
 ### Security Considerations
 
-- Bootchain verification is **mandatory** when runtime verification is enabled
-- You must provide both `expected_bootchain` and `os_image_hash`
-- The verification can be disabled by setting `disable_runtime_verification=true` in the policy, but this is **NOT recommended** for production use as it disables ALL runtime verification
+- **All runtime fields are required by default**: `expected_bootchain`, `app_compose`, and `os_image_hash` must all be provided
+- Missing any of these fields will cause a configuration error
+- To skip runtime verification, you must explicitly set `disable_runtime_verification: true` in the policy
+- **`DstackTdxPolicy::dev()`** sets `disable_runtime_verification: true` for development convenience
+- Disabling runtime verification is **NOT recommended** for production use
 
 ## Computing Measurements for New Dstack Versions
 

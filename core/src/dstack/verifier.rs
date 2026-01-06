@@ -117,11 +117,12 @@ impl DstackTDXVerifier {
     }
 
     /// Verify bootchain measurements (MRTD, RTMR0-2) using TcbInfo from dstack-sdk.
+    ///
+    /// Fails if `expected_bootchain` is not configured.
     fn verify_bootchain(&self, tcb_info: &TcbInfo) -> Result<(), RatlsVerificationError> {
-        let bootchain = match &self.config.expected_bootchain {
-            Some(b) => b,
-            None => return Ok(()), // Skip if not configured
-        };
+        let bootchain = self.config.expected_bootchain.as_ref().ok_or_else(|| {
+            RatlsVerificationError::Configuration("expected_bootchain is required".into())
+        })?;
 
         // Check MRTD (TcbInfo fields are already strings)
         if tcb_info.mrtd != bootchain.mrtd {
@@ -178,15 +179,17 @@ impl DstackTDXVerifier {
     }
 
     /// Verify app compose hash using TcbInfo from dstack-sdk.
+    ///
+    /// Fails if `app_compose` is not configured.
     fn verify_app_compose(
         &self,
         tcb_info: &TcbInfo,
         events: &[EventLog],
     ) -> Result<(), RatlsVerificationError> {
-        let expected = match &self.config.app_compose {
-            Some(ac) => get_compose_hash(ac),
-            None => return Ok(()),
-        };
+        let app_compose = self.config.app_compose.as_ref().ok_or_else(|| {
+            RatlsVerificationError::Configuration("app_compose is required".into())
+        })?;
+        let expected = get_compose_hash(app_compose);
 
         // First check against TcbInfo.compose_hash (string field)
         if tcb_info.compose_hash != expected {
@@ -210,15 +213,16 @@ impl DstackTDXVerifier {
     }
 
     /// Verify OS image hash using TcbInfo from dstack-sdk.
+    ///
+    /// Fails if `os_image_hash` is not configured.
     fn verify_os_image_hash(
         &self,
         tcb_info: &TcbInfo,
         events: &[EventLog],
     ) -> Result<(), RatlsVerificationError> {
-        let expected = match &self.config.os_image_hash {
-            Some(h) => h,
-            None => return Ok(()),
-        };
+        let expected = self.config.os_image_hash.as_ref().ok_or_else(|| {
+            RatlsVerificationError::Configuration("os_image_hash is required".into())
+        })?;
 
         // Check against TcbInfo.os_image_hash (string field)
         if !tcb_info.os_image_hash.is_empty() && &tcb_info.os_image_hash != expected {

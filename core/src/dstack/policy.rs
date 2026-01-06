@@ -44,6 +44,14 @@ pub struct DstackTdxPolicy {
     /// Cache collateral to avoid repeated fetches.
     #[serde(default)]
     pub cache_collateral: bool,
+
+    /// Disable runtime verification (NOT RECOMMENDED for production).
+    ///
+    /// When false (default), all runtime fields (expected_bootchain, app_compose,
+    /// os_image_hash) must be provided or verification will fail.
+    /// Set to true only for development/testing.
+    #[serde(default)]
+    pub disable_runtime_verification: bool,
 }
 
 impl Default for DstackTdxPolicy {
@@ -55,6 +63,7 @@ impl Default for DstackTdxPolicy {
             allowed_tcb_status: default_allowed_tcb_status(),
             pccs_url: default_pccs_url(),
             cache_collateral: false,
+            disable_runtime_verification: false,
         }
     }
 }
@@ -62,9 +71,11 @@ impl Default for DstackTdxPolicy {
 impl DstackTdxPolicy {
     /// Relaxed policy for development.
     ///
-    /// Accepts common TCB statuses without requiring bootchain/app verification.
+    /// Accepts common TCB statuses and disables runtime verification
+    /// (bootchain, app_compose, os_image_hash checks are skipped).
     pub fn dev() -> Self {
         Self {
+            disable_runtime_verification: true,
             allowed_tcb_status: vec![
                 "UpToDate".into(),
                 "SWHardeningNeeded".into(),
@@ -81,23 +92,20 @@ impl IntoVerifier for DstackTdxPolicy {
     fn into_verifier(self) -> Result<DstackTDXVerifier, RatlsVerificationError> {
         let mut builder = DstackTDXVerifierBuilder::new();
 
-        // If no bootchain/app_compose/os_image specified, disable runtime verification
-        let has_runtime_config = self.expected_bootchain.is_some()
-            || self.app_compose.is_some()
-            || self.os_image_hash.is_some();
-
-        if !has_runtime_config {
+        // Only disable runtime verification if explicitly requested
+        if self.disable_runtime_verification {
             builder = builder.disable_runtime_verification();
-        } else {
-            if let Some(bootchain) = self.expected_bootchain {
-                builder = builder.expected_bootchain(bootchain);
-            }
-            if let Some(app_compose) = self.app_compose {
-                builder = builder.app_compose(app_compose);
-            }
-            if let Some(os_hash) = self.os_image_hash {
-                builder = builder.os_image_hash(os_hash);
-            }
+        }
+
+        // Pass all fields through - validation happens in DstackTDXVerifier::new()
+        if let Some(bootchain) = self.expected_bootchain {
+            builder = builder.expected_bootchain(bootchain);
+        }
+        if let Some(app_compose) = self.app_compose {
+            builder = builder.app_compose(app_compose);
+        }
+        if let Some(os_hash) = self.os_image_hash {
+            builder = builder.os_image_hash(os_hash);
         }
 
         builder = builder.allowed_tcb_status(self.allowed_tcb_status);
@@ -121,12 +129,14 @@ mod tests {
         let policy = DstackTdxPolicy::default();
         assert_eq!(policy.allowed_tcb_status, vec!["UpToDate"]);
         assert!(policy.expected_bootchain.is_none());
+        assert!(!policy.disable_runtime_verification);
     }
 
     #[test]
     fn test_dstack_tdx_policy_dev() {
         let policy = DstackTdxPolicy::dev();
         assert!(policy.allowed_tcb_status.contains(&"SWHardeningNeeded".to_string()));
+        assert!(policy.disable_runtime_verification);
     }
 
     #[test]
@@ -140,5 +150,21 @@ mod tests {
         let parsed: DstackTdxPolicy = serde_json::from_str(&json).unwrap();
 
         assert_eq!(parsed.allowed_tcb_status.len(), 2);
+    }
+
+    #[test]
+    fn test_default_policy_requires_all_fields() {
+        // Default policy with no runtime fields should fail to build verifier
+        let policy = DstackTdxPolicy::default();
+        let result = policy.into_verifier();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_dev_policy_builds_without_runtime_fields() {
+        // Dev policy explicitly disables runtime verification
+        let policy = DstackTdxPolicy::dev();
+        let result = policy.into_verifier();
+        assert!(result.is_ok());
     }
 }

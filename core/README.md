@@ -162,23 +162,27 @@ Policy fields vary by verifier implementation. The `Policy` enum wraps implement
 
 ### DstackTdxPolicy
 
+**By default, all runtime fields are required.** Missing any field will cause a configuration error unless `disable_runtime_verification` is set to `true`.
+
 | Field | Description | Required |
 |-------|-------------|----------|
-| `expected_bootchain` | MRTD and RTMR0-2 measurements | For production |
-| `os_image_hash` | SHA256 of Dstack image's sha256sum.txt | For production |
-| `app_compose` | Expected application configuration | For production |
+| `expected_bootchain` | MRTD and RTMR0-2 measurements | Yes (unless disabled) |
+| `os_image_hash` | SHA256 of Dstack image's sha256sum.txt | Yes (unless disabled) |
+| `app_compose` | Expected application configuration | Yes (unless disabled) |
 | `allowed_tcb_status` | Acceptable TCB statuses (e.g., `["UpToDate"]`) | Yes |
-| `pccs_url` | Intel PCCS URL (defaults to Intel's) | No |
-| `cache_collateral` | Cache Intel collateral (default: true) | No |
+| `disable_runtime_verification` | Skip runtime checks (default: false) | No |
+| `pccs_url` | Intel PCCS URL (defaults to Phala's) | No |
+| `cache_collateral` | Cache Intel collateral (default: false) | No |
 
 ```rust
 use ratls_core::{Policy, DstackTdxPolicy, ExpectedBootchain};
 use serde_json::json;
 
-// Development policy - relaxed TCB status, no bootchain verification
+// Development policy - explicitly disables runtime verification
+// (sets disable_runtime_verification: true internally)
 let dev_policy = Policy::DstackTdx(DstackTdxPolicy::dev());
 
-// Production policy - full verification
+// Production policy - all runtime fields required
 let prod_policy = Policy::DstackTdx(DstackTdxPolicy {
     expected_bootchain: Some(ExpectedBootchain {
         mrtd: "b24d3b24...".into(),
@@ -194,6 +198,10 @@ let prod_policy = Policy::DstackTdx(DstackTdxPolicy {
     allowed_tcb_status: vec!["UpToDate".into()],
     ..Default::default()
 });
+
+// This will FAIL - missing runtime fields without disable_runtime_verification
+let invalid_policy = Policy::DstackTdx(DstackTdxPolicy::default());
+// invalid_policy.into_verifier() returns Err(Configuration(...))
 ```
 
 ## Error Handling
