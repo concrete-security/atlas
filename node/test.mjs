@@ -1,166 +1,264 @@
-import { createRatlsAgent, createRatlsFetch } from "./ratls-fetch.js"
+/**
+ * RATLS Node.js Tests
+ *
+ * Run with: npm test
+ */
+
+import { createRatlsAgent, createRatlsFetch, mergeWithDefaultAppCompose } from "./ratls-fetch.js"
 import { createRequire } from "module"
+import { readFileSync } from "fs"
+import { dirname, join } from "path"
+import { fileURLToPath } from "url"
 
 const require = createRequire(import.meta.url)
 const binding = require("./index.cjs")
 
-console.log("Testing ratls-node module...\n")
+const __dirname = dirname(fileURLToPath(import.meta.url))
 
-let testsPassed = 0
-let testsFailed = 0
+// Read docker compose content from core test data
+const VLLM_DOCKER_COMPOSE = readFileSync(
+  join(__dirname, "../core/tests/data/vllm_docker_compose.yml"),
+  "utf-8"
+)
+
+// Full production policy for vllm.concrete-security.com
+const VLLM_POLICY = {
+  type: "dstack_tdx",
+  expected_bootchain: {
+    mrtd: "b24d3b24e9e3c16012376b52362ca09856c4adecb709d5fac33addf1c47e193da075b125b6c364115771390a5461e217",
+    rtmr0: "24c15e08c07aa01c531cbd7e8ba28f8cb62e78f6171bf6a8e0800714a65dd5efd3a06bf0cf5433c02bbfac839434b418",
+    rtmr1: "6e1afb7464ed0b941e8f5bf5b725cf1df9425e8105e3348dca52502f27c453f3018a28b90749cf05199d5a17820101a7",
+    rtmr2: "89e73cedf48f976ffebe8ac1129790ff59a0f52d54d969cb73455b1a79793f1dc16edc3b1fccc0fd65ea5905774bbd57"
+  },
+  os_image_hash: "86b181377635db21c415f9ece8cc8505f7d4936ad3be7043969005a8c4690c1a",
+  app_compose: mergeWithDefaultAppCompose({
+    docker_compose_file: VLLM_DOCKER_COMPOSE,
+    allowed_envs: ["AUTH_SERVICE_TOKEN"]
+  }),
+  allowed_tcb_status: ["UpToDate", "SWHardeningNeeded"]
+}
+
+// Dev policy for tests that don't need full verification
+const DEV_POLICY = {
+  type: "dstack_tdx",
+  disable_runtime_verification: true,
+  allowed_tcb_status: ["UpToDate", "SWHardeningNeeded", "OutOfDate"]
+}
+
+// Test helpers
+let passed = 0
+let failed = 0
 
 function test(name, fn) {
-  try {
-    fn()
-    console.log(`✓ ${name}`)
-    testsPassed++
-  } catch (error) {
-    console.error(`✗ ${name}: ${error.message}`)
-    testsFailed++
+  return async () => {
+    try {
+      await fn()
+      console.log(`✓ ${name}`)
+      passed++
+    } catch (err) {
+      console.error(`✗ ${name}`)
+      console.error(`  Error: ${err.message}`)
+      failed++
+    }
   }
 }
 
-try {
-  test("Module imports successfully", () => {
-    if (!createRatlsAgent) throw new Error("createRatlsAgent not exported")
-  })
+function assert(condition, message) {
+  if (!condition) {
+    throw new Error(message || "Assertion failed")
+  }
+}
 
-  test("Native binding loads", () => {
-    if (!binding) throw new Error("Binding not loaded")
-    if (typeof binding.ratlsConnect !== "function") {
-      throw new Error("ratlsConnect function not available")
-    }
-  })
+// ============================================================================
+// Tests
+// ============================================================================
 
-  test("createRatlsAgent with string target", () => {
-    const agent = createRatlsAgent("example.com")
-    if (typeof agent !== "object") throw new Error("Agent not an object")
-    if (typeof agent.createConnection !== "function") {
-      throw new Error("Agent missing createConnection method")
-    }
-  })
+const tests = [
+  test("Module imports successfully", async () => {
+    assert(typeof createRatlsAgent === "function", "createRatlsAgent not exported")
+    assert(typeof createRatlsFetch === "function", "createRatlsFetch not exported")
+    assert(typeof mergeWithDefaultAppCompose === "function", "mergeWithDefaultAppCompose not exported")
+  }),
 
-  test("createRatlsAgent with options object", () => {
-    let attestationCalled = false
-    const agent = createRatlsAgent({
-      target: "example.com:443",
-      onAttestation: (att) => {
-        attestationCalled = true
-      }
-    })
-    if (typeof agent !== "object") throw new Error("Agent not an object")
-  })
+  test("Native binding loads", async () => {
+    assert(binding, "Binding not loaded")
+    assert(typeof binding.ratlsConnect === "function", "ratlsConnect function not available")
+    assert(typeof binding.mergeWithDefaultAppCompose === "function", "mergeWithDefaultAppCompose function not available")
+  }),
 
-  test("createRatlsAgent with port in target", () => {
-    const agent = createRatlsAgent("example.com:8443")
-    if (typeof agent !== "object") throw new Error("Agent not an object")
-  })
+  test("Socket API available", async () => {
+    assert(typeof binding.ratlsConnect === "function", "ratlsConnect not available")
+    assert(typeof binding.socketRead === "function", "socketRead not available")
+    assert(typeof binding.socketWrite === "function", "socketWrite not available")
+    assert(typeof binding.socketClose === "function", "socketClose not available")
+    assert(typeof binding.socketDestroy === "function", "socketDestroy not available")
+  }),
 
-  test("createRatlsAgent with serverName override", () => {
-    const agent = createRatlsAgent({
-      target: "10.0.0.1:443",
-      serverName: "example.com"
-    })
-    if (typeof agent !== "object") throw new Error("Agent not an object")
-  })
-
-  test("createRatlsAgent error handling - missing target", () => {
+  test("createRatlsFetch requires policy", async () => {
     try {
-      createRatlsAgent({})
-      throw new Error("Should have thrown error for missing target")
-    } catch (e) {
-      if (!e.message.includes("target is required")) {
-        throw new Error(`Wrong error: ${e.message}`)
-      }
+      createRatlsFetch({ target: "example.com" })
+      throw new Error("Should have thrown")
+    } catch (err) {
+      assert(err.message.includes("policy is required"), `Expected policy error, got: ${err.message}`)
     }
-  })
+  }),
 
-  test("createRatlsFetch with string target", () => {
-    const fetch = createRatlsFetch("example.com")
-    if (typeof fetch !== "function") throw new Error("Fetch not a function")
-  })
+  test("createRatlsFetch rejects string shorthand", async () => {
+    try {
+      createRatlsFetch("example.com")
+      throw new Error("Should have thrown")
+    } catch (err) {
+      assert(err.message.includes("String shorthand no longer supported"), `Expected string error, got: ${err.message}`)
+    }
+  }),
 
-  test("createRatlsFetch with options object", () => {
-    const fetch = createRatlsFetch({
+  test("createRatlsAgent requires policy", async () => {
+    try {
+      createRatlsAgent({ target: "example.com" })
+      throw new Error("Should have thrown")
+    } catch (err) {
+      assert(err.message.includes("policy is required"), `Expected policy error, got: ${err.message}`)
+    }
+  }),
+
+  test("createRatlsAgent rejects string shorthand", async () => {
+    try {
+      createRatlsAgent("example.com")
+      throw new Error("Should have thrown")
+    } catch (err) {
+      assert(err.message.includes("String shorthand no longer supported"), `Expected string error, got: ${err.message}`)
+    }
+  }),
+
+  test("createRatlsAgent error handling - missing target", async () => {
+    try {
+      createRatlsAgent({ policy: DEV_POLICY })
+      throw new Error("Should have thrown error for missing target")
+    } catch (err) {
+      assert(err.message.includes("target is required"), `Wrong error: ${err.message}`)
+    }
+  }),
+
+  test("createRatlsAgent with valid options", async () => {
+    const agent = createRatlsAgent({
       target: "example.com:443",
+      policy: DEV_POLICY,
       onAttestation: (att) => {}
     })
-    if (typeof fetch !== "function") throw new Error("Fetch not a function")
-  })
+    assert(typeof agent === "object", "Agent not an object")
+    assert(typeof agent.createConnection === "function", "Agent missing createConnection method")
+  }),
 
-  test("createRatlsFetch hybrid routing - accepts relative and absolute URLs", () => {
-    const fetch = createRatlsFetch("example.com")
-    if (typeof fetch !== "function") throw new Error("Fetch not a function")
-    
-    const relativeUrl = "/api/data"
-    const absoluteUrl = "https://example.com/api/data"
-    const otherHostUrl = "https://google.com"
-    
-    const p1 = fetch(relativeUrl, { method: "GET" })
-    const p2 = fetch(absoluteUrl, { method: "GET" })
-    const p3 = fetch(otherHostUrl, { method: "GET" })
-    
-    if (!(p1 instanceof Promise)) throw new Error("Fetch should return a Promise")
-    if (!(p2 instanceof Promise)) throw new Error("Fetch should return a Promise")
-    if (!(p3 instanceof Promise)) throw new Error("Fetch should return a Promise")
-    
+  test("createRatlsAgent with serverName override", async () => {
+    const agent = createRatlsAgent({
+      target: "10.0.0.1:443",
+      serverName: "example.com",
+      policy: DEV_POLICY
+    })
+    assert(typeof agent === "object", "Agent not an object")
+  }),
+
+  test("createRatlsFetch with valid options", async () => {
+    const fetch = createRatlsFetch({
+      target: "example.com:443",
+      policy: DEV_POLICY,
+      onAttestation: (att) => {}
+    })
+    assert(typeof fetch === "function", "Fetch not a function")
+  }),
+
+  test("createRatlsFetch returns promises", async () => {
+    const fetch = createRatlsFetch({
+      target: "example.com",
+      policy: DEV_POLICY
+    })
+
+    const p1 = fetch("/api/data", { method: "GET" })
+    const p2 = fetch("https://example.com/api/data", { method: "GET" })
+
+    assert(p1 instanceof Promise, "Fetch should return a Promise for relative URL")
+    assert(p2 instanceof Promise, "Fetch should return a Promise for absolute URL")
+
+    // Suppress unhandled rejection warnings
     p1.catch(() => {})
     p2.catch(() => {})
-    p3.catch(() => {})
-  })
+  }),
 
-  test("Socket API available", () => {
-    const hasSocketApi =
-      typeof binding.ratlsConnect === "function" &&
-      typeof binding.socketRead === "function" &&
-      typeof binding.socketWrite === "function" &&
-      typeof binding.socketClose === "function" &&
-      typeof binding.socketDestroy === "function"
-    if (!hasSocketApi) {
-      throw new Error("Socket API not fully available")
-    }
-  })
+  test("mergeWithDefaultAppCompose fills in defaults", async () => {
+    const merged = mergeWithDefaultAppCompose({
+      docker_compose_file: "test",
+      allowed_envs: ["MY_VAR"]
+    })
 
-  test("Low-level bindings available from binding export", () => {
-    const bindingExports = require("./index.cjs")
-    if (typeof bindingExports.ratlsConnect !== "function") {
-      throw new Error("ratlsConnect not exported from index.js")
-    }
-    if (typeof bindingExports.socketRead !== "function") {
-      throw new Error("socketRead not exported from index.js")
-    }
-    if (typeof bindingExports.socketWrite !== "function") {
-      throw new Error("socketWrite not exported from index.js")
-    }
-    if (typeof bindingExports.socketClose !== "function") {
-      throw new Error("socketClose not exported from index.js")
-    }
-    if (typeof bindingExports.socketDestroy !== "function") {
-      throw new Error("socketDestroy not exported from index.js")
-    }
-  })
+    assert(merged.docker_compose_file === "test", "User value should be preserved")
+    assert(Array.isArray(merged.allowed_envs) && merged.allowed_envs[0] === "MY_VAR", "User allowed_envs should be preserved")
+    assert(merged.runner === "docker-compose", "Default runner should be filled in")
+    assert(merged.manifest_version === 2, "Default manifest_version should be filled in")
+    assert(merged.features?.includes("kms"), "Default features should be filled in")
+  }),
 
-  test("Main entry point only exports high-level API", async () => {
+  test("mergeWithDefaultAppCompose preserves user overrides", async () => {
+    const merged = mergeWithDefaultAppCompose({
+      docker_compose_file: "custom-compose",
+      runner: "custom-runner",
+      features: ["custom-feature"]
+    })
+
+    assert(merged.docker_compose_file === "custom-compose", "docker_compose_file should be preserved")
+    assert(merged.runner === "custom-runner", "User runner should override default")
+    assert(merged.features[0] === "custom-feature", "User features should override default")
+  }),
+
+  test("Main entry point exports high-level API", async () => {
     const mainExports = await import("./ratls-fetch.js")
-    if (typeof mainExports.createRatlsFetch !== "function") {
-      throw new Error("createRatlsFetch not exported from ratls-fetch.js")
-    }
-    if (typeof mainExports.ratlsConnect === "function") {
-      throw new Error("ratlsConnect should not be exported from main entry point - use 'ratls-node/binding' instead")
-    }
-  })
+    assert(typeof mainExports.createRatlsFetch === "function", "createRatlsFetch not exported")
+    assert(typeof mainExports.createRatlsAgent === "function", "createRatlsAgent not exported")
+    assert(typeof mainExports.mergeWithDefaultAppCompose === "function", "mergeWithDefaultAppCompose not exported")
+  }),
 
-  console.log(`\n✅ Tests passed: ${testsPassed}`)
-  if (testsFailed > 0) {
-    console.error(`❌ Tests failed: ${testsFailed}`)
-    process.exit(1)
+  test("full verification against vllm.concrete-security.com", async () => {
+    const fetch = createRatlsFetch({
+      target: "vllm.concrete-security.com",
+      policy: VLLM_POLICY,
+      onAttestation: (att) => {
+        console.log(`  Attestation received: teeType=${att.teeType}, trusted=${att.trusted}`)
+      }
+    })
+
+    const response = await fetch("/v1/models")
+
+    assert(response.ok, `Expected 200, got ${response.status}`)
+    assert(response.attestation, "Response should have attestation")
+    assert(response.attestation.trusted, "Attestation should be trusted")
+    assert(response.attestation.teeType === "tdx", `Expected teeType=tdx, got ${response.attestation.teeType}`)
+
+    const data = await response.json()
+    assert(data.data && Array.isArray(data.data), "Should return models list")
+    console.log(`  Models: ${data.data.map(m => m.id).join(", ")}`)
+  })
+]
+
+// ============================================================================
+// Main
+// ============================================================================
+
+async function main() {
+  console.log("RATLS Node.js Tests\n")
+  console.log("================================\n")
+
+  for (const runTest of tests) {
+    await runTest()
   }
 
-  console.log("\nNote: Full functionality test requires a valid TEE endpoint.")
-  console.log("Run: node examples/ai-sdk-openai-demo.mjs for end-to-end test.")
+  console.log("\n================================")
+  console.log(`Results: ${passed} passed, ${failed} failed`)
 
-} catch (error) {
-  console.error("❌ Test suite failed:", error.message)
-  console.error(error.stack)
-  process.exit(1)
+  if (failed > 0) {
+    process.exit(1)
+  }
 }
+
+main().catch(err => {
+  console.error("Fatal error:", err)
+  process.exit(1)
+})

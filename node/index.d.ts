@@ -14,8 +14,16 @@ export interface JsRatlsConnection {
   socketId: number
   attestation: JsAttestation
 }
-/** Establish an RATLS connection and return a socket handle with attestation result */
-export declare function ratlsConnect(targetHost: string, serverName: string): Promise<JsRatlsConnection>
+/**
+ * Merge a user-provided app_compose with default values.
+ *
+ * This allows users to provide only the fields they care about (typically
+ * `docker_compose_file` and `allowed_envs`) and get a complete app_compose
+ * configuration with all required default fields filled in.
+ */
+export declare function mergeWithDefaultAppCompose(userCompose: any): any
+/** Establish an RATLS connection and return a socket handle with attestation result. */
+export declare function ratlsConnect(targetHost: string, serverName: string, policyJson: any): Promise<JsRatlsConnection>
 /** Read data from socket */
 export declare function socketRead(socketId: number, size?: number | undefined | null): Promise<Buffer>
 /** Write data to socket */

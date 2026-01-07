@@ -3,8 +3,7 @@
 //! These tests verify real TDX attestation against a live dstack deployment.
 
 use ratls_core::{
-    dstack::compose_hash::get_compose_hash, DstackTDXVerifierBuilder, ExpectedBootchain,
-    RatlsVerificationError,
+    DstackTDXVerifierBuilder, ExpectedBootchain, RatlsVerificationError, dstack::{compose_hash::get_compose_hash, get_default_app_compose}
 };
 use serde_json::json;
 
@@ -25,29 +24,6 @@ fn test_bootchain() -> ExpectedBootchain {
         rtmr1: "6e1afb7464ed0b941e8f5bf5b725cf1df9425e8105e3348dca52502f27c453f3018a28b90749cf05199d5a17820101a7".to_string(),
         rtmr2: "89e73cedf48f976ffebe8ac1129790ff59a0f52d54d969cb73455b1a79793f1dc16edc3b1fccc0fd65ea5905774bbd57".to_string(),
     }
-}
-
-/// Default app_compose configuration for dstack deployments.
-fn get_default_app_compose() -> serde_json::Value {
-    json!({
-        "allowed_envs": [],
-        "docker_compose_file": "",
-        "features": ["kms", "tproxy-net"],
-        "gateway_enabled": true,
-        "kms_enabled": true,
-        "local_key_provider_enabled": false,
-        "manifest_version": 2,
-        "name": "",
-        "no_instance_id": false,
-        "pre_launch_script": "#!/bin/bash\necho \"----------------------------------------------\"\necho \"Running Phala Cloud Pre-Launch Script v0.0.10\"\necho \"----------------------------------------------\"\nset -e\n\n# Function: notify host\n\nnotify_host() {\n    if command -v dstack-util >/dev/null 2>&1; then\n        dstack-util notify-host -e \"$1\" -d \"$2\"\n    else\n        tdxctl notify-host -e \"$1\" -d \"$2\"\n    fi\n}\n\nnotify_host_hoot_info() {\n    notify_host \"boot.progress\" \"$1\"\n}\n\nnotify_host_hoot_error() {\n    notify_host \"boot.error\" \"$1\"\n}\n\n# Function: Perform Docker cleanup\nperform_cleanup() {\n    echo \"Pruning unused images\"\n    docker image prune -af\n    echo \"Pruning unused volumes\"\n    docker volume prune -f\n    notify_host_hoot_info \"docker cleanup completed\"\n}\n\n# Function: Check Docker login status without exposing credentials\ncheck_docker_login() {\n    # Try to verify login status without exposing credentials\n    if docker info 2>/dev/null | grep -q \"Username\"; then\n        return 0\n    else\n        return 1\n    fi\n}\n\n# Main logic starts here\necho \"Starting login process...\"\n\n# Check if Docker credentials exist\nif [[ -n \"$DSTACK_DOCKER_USERNAME\" && -n \"$DSTACK_DOCKER_PASSWORD\" ]]; then\n    echo \"Docker credentials found\"\n    \n    # Check if already logged in\n    if check_docker_login; then\n        echo \"Already logged in to Docker registry\"\n    else\n        echo \"Logging in to Docker registry...\"\n        # Login without exposing password in process list\n        if [[ -n \"$DSTACK_DOCKER_REGISTRY\" ]]; then\n            echo \"$DSTACK_DOCKER_PASSWORD\" | docker login -u \"$DSTACK_DOCKER_USERNAME\" --password-stdin \"$DSTACK_DOCKER_REGISTRY\"\n        else\n            echo \"$DSTACK_DOCKER_PASSWORD\" | docker login -u \"$DSTACK_DOCKER_USERNAME\" --password-stdin\n        fi\n        \n        if [ $? -eq 0 ]; then\n            echo \"Docker login successful\"\n        else\n            echo \"Docker login failed\"\n            notify_host_hoot_error \"docker login failed\"\n            exit 1\n        fi\n    fi\n# Check if AWS ECR credentials exist\nelif [[ -n \"$DSTACK_AWS_ACCESS_KEY_ID\" && -n \"$DSTACK_AWS_SECRET_ACCESS_KEY\" && -n \"$DSTACK_AWS_REGION\" && -n \"$DSTACK_AWS_ECR_REGISTRY\" ]]; then\n    echo \"AWS ECR credentials found\"\n    \n    # Check if AWS CLI is installed\n    if [ ! -f \"./aws/dist/aws\" ]; then\n        notify_host_hoot_info \"awscli not installed, installing...\"\n        echo \"AWS CLI not installed, installing...\"\n        curl \"https://awscli.amazonaws.com/awscli-exe-linux-x86_64-2.24.14.zip\" -o \"awscliv2.zip\"\n        echo \"6ff031a26df7daebbfa3ccddc9af1450 awscliv2.zip\" | md5sum -c\n        if [ $? -ne 0 ]; then\n            echo \"MD5 checksum failed\"\n            notify_host_hoot_error \"awscli install failed\"\n            exit 1\n        fi\n        unzip awscliv2.zip &> /dev/null\n    else\n        echo \"AWS CLI is already installed: ./aws/dist/aws\"\n    fi\n\n    # Set AWS credentials as environment variables\n    export AWS_ACCESS_KEY_ID=\"$DSTACK_AWS_ACCESS_KEY_ID\"\n    export AWS_SECRET_ACCESS_KEY=\"$DSTACK_AWS_SECRET_ACCESS_KEY\"\n    export AWS_DEFAULT_REGION=\"$DSTACK_AWS_REGION\"\n    \n    # Set session token if provided (for temporary credentials)\n    if [[ -n \"$DSTACK_AWS_SESSION_TOKEN\" ]]; then\n        echo \"AWS session token found, using temporary credentials\"\n        export AWS_SESSION_TOKEN=\"$DSTACK_AWS_SESSION_TOKEN\"\n    fi\n    \n    # Test AWS credentials before attempting ECR login\n    echo \"Testing AWS credentials...\"\n    if ! ./aws/dist/aws sts get-caller-identity &> /dev/null; then\n        echo \"AWS credentials test failed\"\n        # For session token credentials, this might be expected if they're expired\n        # Log warning but don't fail startup\n        if [[ -n \"$DSTACK_AWS_SESSION_TOKEN\" ]]; then\n            echo \"Warning: AWS temporary credentials may have expired, continuing startup\"\n            notify_host_hoot_info \"AWS temporary credentials may have expired\"\n        else\n            echo \"AWS credentials test failed\"\n            notify_host_hoot_error \"Invalid AWS credentials\"\n            exit 1\n        fi\n    else\n        echo \"Logging in to AWS ECR...\"\n        ./aws/dist/aws ecr get-login-password --region $DSTACK_AWS_REGION | docker login --username AWS --password-stdin \"$DSTACK_AWS_ECR_REGISTRY\"\n        if [ $? -eq 0 ]; then\n            echo \"AWS ECR login successful\"\n            notify_host_hoot_info \"AWS ECR login successful\"\n        else\n            echo \"AWS ECR login failed\"\n            # For session token credentials, don't fail startup if login fails\n            if [[ -n \"$DSTACK_AWS_SESSION_TOKEN\" ]]; then\n                echo \"Warning: AWS ECR login failed with temporary credentials, continuing startup\"\n                notify_host_hoot_info \"AWS ECR login failed with temporary credentials\"\n            else\n                notify_host_hoot_error \"AWS ECR login failed\"\n                exit 1\n            fi\n        fi\n    fi\nfi\n\nperform_cleanup\n\n#\n# Set root password.\n#\nif [ -n \"$DSTACK_ROOT_PASSWORD\" ]; then\n    echo \"$DSTACK_ROOT_PASSWORD\" | passwd --stdin root 2>/dev/null         || printf '%s\\n%s\\n' \"$DSTACK_ROOT_PASSWORD\" \"$DSTACK_ROOT_PASSWORD\" | passwd root\n    unset DSTACK_ROOT_PASSWORD\n    echo \"Root password set/updated from DSTACK_ROOT_PASSWORD\"\n\nelif [ -z \"$(grep '^root:' /etc/shadow 2>/dev/null | cut -d: -f2)\" ]; then\n    DSTACK_ROOT_PASSWORD=$(\n        dd if=/dev/urandom bs=32 count=1 2>/dev/null         | sha256sum         | awk '{print $1}'         | cut -c1-32\n    )\n    echo \"$DSTACK_ROOT_PASSWORD\" | passwd --stdin root 2>/dev/null         || printf '%s\\n%s\\n' \"$DSTACK_ROOT_PASSWORD\" \"$DSTACK_ROOT_PASSWORD\" | passwd root\n    unset DSTACK_ROOT_PASSWORD\n    echo \"Root password set (random auto-init)\"\n\nelse\n    echo \"Root password already set; no changes.\"\nfi\n\nif [[ -n \"$DSTACK_ROOT_PUBLIC_KEY\" ]]; then\n    mkdir -p /home/root/.ssh\n    echo \"$DSTACK_ROOT_PUBLIC_KEY\" > /home/root/.ssh/authorized_keys\n    unset $DSTACK_ROOT_PUBLIC_KEY\n    echo \"Root public key set\"\nfi\nif [[ -n \"$DSTACK_AUTHORIZED_KEYS\" ]]; then\n    mkdir -p /home/root/.ssh\n    echo \"$DSTACK_AUTHORIZED_KEYS\" > /home/root/.ssh/authorized_keys\n    unset $DSTACK_AUTHORIZED_KEYS\n    echo \"Root authorized_keys set\"\nfi\n\n\nif [[ -S /var/run/dstack.sock ]]; then\n    export DSTACK_APP_ID=$(curl -s --unix-socket /var/run/dstack.sock http://dstack/Info | jq -j .app_id)\nelif [[ -S /var/run/tappd.sock ]]; then\n    export DSTACK_APP_ID=$(curl -s --unix-socket /var/run/tappd.sock http://dstack/prpc/Tappd.Info | jq -j .app_id)\nfi\n# Check if DSTACK_GATEWAY_DOMAIN is not set, try to get it from user_config or app-compose.json\n# Priority: user_config > app-compose.json\nif [[ -z \"$DSTACK_GATEWAY_DOMAIN\" ]]; then\n    # First try to get from /dstack/user_config if it exists and is valid JSON\n    if [[ -f /dstack/user_config ]] && jq empty /dstack/user_config 2>/dev/null; then\n        if [[ $(jq 'has(\"default_gateway_domain\")' /dstack/user_config 2>/dev/null) == \"true\" ]]; then\n            export DSTACK_GATEWAY_DOMAIN=$(jq -j '.default_gateway_domain' /dstack/user_config)\n        fi\n    fi\n\n    # If still not set, try to get from app-compose.json\n    if [[ -z \"$DSTACK_GATEWAY_DOMAIN\" ]] && [[ $(jq 'has(\"default_gateway_domain\")' app-compose.json) == \"true\" ]]; then\n        export DSTACK_GATEWAY_DOMAIN=$(jq -j '.default_gateway_domain' app-compose.json)\n    fi\nfi\nif [[ -n \"$DSTACK_GATEWAY_DOMAIN\" ]]; then\n    export DSTACK_APP_DOMAIN=$DSTACK_APP_ID\".\"$DSTACK_GATEWAY_DOMAIN\nfi\n\necho \"----------------------------------------------\"\necho \"Script execution completed\"\necho \"----------------------------------------------\"\n",
-        "public_logs": true,
-        "public_sysinfo": true,
-        "public_tcbinfo": true,
-        "runner": "docker-compose",
-        "secure_time": false,
-        "storage_fs": "zfs",
-        "tproxy_enabled": true
-    })
 }
 
 /// Docker compose file for vllm.concrete-security.com
@@ -230,6 +206,7 @@ mod integration {
         // We won't actually verify it matches since we don't know the exact compose
         let mut app_compose = get_default_app_compose();
         app_compose["docker_compose_file"] = json!(get_vllm_docker_compose());
+        app_compose["allowed_envs"] = json!(["AUTH_SERVICE_TOKEN"]);
 
         let verifier = DstackTDXVerifierBuilder::new()
             .expected_bootchain(test_bootchain())
@@ -255,13 +232,6 @@ mod integration {
                         println!("Full verification passed! TCB Status: {}", tdx_report.status);
                     }
                 }
-            }
-            Err(RatlsVerificationError::AppComposeHashMismatch { expected, actual }) => {
-                println!(
-                    "App compose hash mismatch (expected if it is out of date):\n  Expected: {}\n  Actual: {}",
-                    expected, actual
-                );
-                // This is acceptable - the bootchain verification passed
             }
             Err(e) => {
                 panic!("Unexpected verification error: {:?}", e);

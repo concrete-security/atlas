@@ -10,9 +10,10 @@ crate-type = ["cdylib"]
 
 [dependencies]
 ratls-core = { path = "../core" }
-napi = { version = "2.16", default-features = false, features = ["napi4", "tokio_rt"] }
+napi = { version = "2.16", default-features = false, features = ["napi4", "tokio_rt", "serde-json"] }
 napi-derive = { version = "2.16", features = ["type-def"] }
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "net", "io-util"] }
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
 thiserror = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

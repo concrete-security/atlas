@@ -3,9 +3,50 @@
  *
  * This module provides a fetch-like API that delegates HTTP handling to the
  * WASM module (including chunked transfer encoding for streaming LLM responses).
+ *
+ * @example Production usage with full verification
+ * ```js
+ * import { init, createRatlsFetch, mergeWithDefaultAppCompose } from "ratls-fetch.js"
+ *
+ * await init()
+ *
+ * const policy = {
+ *   type: "dstack_tdx",
+ *   expected_bootchain: {
+ *     mrtd: "b24d3b24...",
+ *     rtmr0: "24c15e08...",
+ *     rtmr1: "6e1afb74...",
+ *     rtmr2: "89e73ced..."
+ *   },
+ *   os_image_hash: "86b18137...",
+ *   app_compose: mergeWithDefaultAppCompose({
+ *     docker_compose_file: "services:\n  app:\n    image: myapp",
+ *     allowed_envs: ["API_KEY"]
+ *   }),
+ *   allowed_tcb_status: ["UpToDate", "SWHardeningNeeded"]
+ * }
+ *
+ * const fetch = createRatlsFetch({
+ *   proxyUrl: "ws://localhost:9000",
+ *   targetHost: "enclave.example.com",
+ *   policy
+ * })
+ * const response = await fetch("/api/data")
+ * ```
+ *
+ * @example Development only (NOT for production)
+ * ```js
+ * // WARNING: disable_runtime_verification skips bootchain/app_compose/os_image checks
+ * // Use ONLY for development/testing, NEVER in production
+ * const devPolicy = {
+ *   type: "dstack_tdx",
+ *   disable_runtime_verification: true,  // DEV ONLY
+ *   allowed_tcb_status: ["UpToDate", "SWHardeningNeeded", "OutOfDate"]
+ * }
+ * ```
  */
 
-import init, { AttestedStream, RatlsHttp } from "./ratls_wasm.js";
+import init, { AttestedStream, RatlsHttp, mergeWithDefaultAppCompose } from "./ratls_wasm.js";
 
 // ============================================================================
 // WASM Initialization
@@ -70,16 +111,21 @@ function buildProxyUrl(base, target) {
  * @param {Object} options
  * @param {string} options.proxyUrl - WebSocket proxy URL (e.g., "ws://127.0.0.1:9000")
  * @param {string} options.targetHost - Target TEE server (e.g., "vllm.example.com:443")
+ * @param {Object} options.policy - Verification policy
  * @param {string} [options.serverName] - TLS server name (defaults to hostname from targetHost)
  * @param {Object} [options.defaultHeaders] - Default headers to include in all requests
  * @param {Function} [options.onAttestation] - Callback when attestation is received
  * @returns {Function} A fetch-compatible async function
  */
 export function createRatlsFetch(options) {
-  const { proxyUrl, targetHost, serverName, defaultHeaders, onAttestation } = options;
+  const { proxyUrl, targetHost, serverName, defaultHeaders, onAttestation, policy } = options;
 
   if (!proxyUrl || !targetHost) {
     throw new Error("proxyUrl and targetHost are required for RA-TLS fetch");
+  }
+
+  if (!policy) {
+    throw new Error("policy is required for RATLS verification. See docs for policy format.");
   }
 
   const normalizedTarget = normalizeTarget(targetHost);
@@ -93,8 +139,8 @@ export function createRatlsFetch(options) {
   return async function ratlsFetch(input, init = {}) {
     await ensureWasm();
 
-    // Connect and perform RA-TLS handshake
-    const http = await RatlsHttp.connect(wsUrl, sni);
+    // Connect and perform RA-TLS handshake with policy
+    const http = await RatlsHttp.connect(wsUrl, sni, policy);
 
     // Get attestation and notify callback
     const attestation = http.attestation();
@@ -170,4 +216,4 @@ export function createRatlsFetch(options) {
 }
 
 // Re-export for advanced usage
-export { init, AttestedStream, RatlsHttp };
+export { init, AttestedStream, RatlsHttp, mergeWithDefaultAppCompose };

@@ -17,7 +17,7 @@ use futures::AsyncReadExt;
 use http_body_util::{BodyExt, Full};
 use hyper::client::conn::http1;
 use hyper::Request;
-use ratls_core::{ratls_connect, AsyncWriteExt, Policy, TlsStream};
+use ratls_core::{dstack::merge_with_default_app_compose, ratls_connect, AsyncWriteExt, Policy, TlsStream};
 use serde::Serialize;
 use std::{cell::RefCell, rc::Rc};
 use wasm_bindgen::prelude::*;
@@ -26,6 +26,28 @@ use web_sys::ReadableStreamDefaultController;
 use ws_stream_wasm::{WsMeta, WsStreamIo};
 
 use hyper_io::HyperIo;
+
+// ============================================================================
+// App Compose Utilities
+// ============================================================================
+
+/// Merge user-provided app_compose with default values.
+///
+/// This allows users to provide only the fields they care about
+/// (typically docker_compose_file and allowed_envs) and get a complete
+/// app_compose configuration with all required default fields filled in.
+///
+/// User-provided values override defaults.
+#[wasm_bindgen(js_name = mergeWithDefaultAppCompose)]
+pub fn merge_with_default_app_compose_js(user_compose: JsValue) -> Result<JsValue, JsValue> {
+    let user_value: serde_json::Value = serde_wasm_bindgen::from_value(user_compose)
+        .map_err(|e| JsValue::from_str(&format!("invalid app_compose: {e}")))?;
+
+    let merged = merge_with_default_app_compose(&user_value);
+
+    serde_wasm_bindgen::to_value(&merged)
+        .map_err(|e| JsValue::from_str(&format!("failed to serialize merged app_compose: {e}")))
+}
 
 type WsIo = IoStream<WsStreamIo, Vec<u8>>;
 
@@ -97,8 +119,17 @@ impl AttestedStream {
     /// # Arguments
     /// * `ws_url` - WebSocket URL (e.g., "ws://proxy:9000?target=host:443")
     /// * `server_name` - TLS server name for SNI
+    /// * `policy` - Verification policy
     #[wasm_bindgen(js_name = connect)]
-    pub async fn connect(ws_url: &str, server_name: &str) -> Result<AttestedStream, JsValue> {
+    pub async fn connect(
+        ws_url: &str,
+        server_name: &str,
+        policy_js: JsValue,
+    ) -> Result<AttestedStream, JsValue> {
+        // Parse policy from JS object
+        let policy: Policy = serde_wasm_bindgen::from_value(policy_js)
+            .map_err(|e| JsValue::from_str(&format!("invalid policy: {e}")))?;
+
         // 1. Establish WebSocket tunnel
         let (_meta, ws_stream) = WsMeta::connect(ws_url, None)
             .await
@@ -108,7 +139,7 @@ impl AttestedStream {
         let (tls, report) = ratls_connect(
             ws_stream.into_io(),
             server_name,
-            Policy::default(),
+            policy,
             Some(vec!["http/1.1".into()]),
         )
         .await
@@ -203,8 +234,21 @@ pub struct RatlsHttp {
 #[wasm_bindgen]
 impl RatlsHttp {
     /// Connect to a TEE server and perform RA-TLS handshake.
+    ///
+    /// # Arguments
+    /// * `ws_url` - WebSocket URL (e.g., "ws://proxy:9000?target=host:443")
+    /// * `server_name` - TLS server name for SNI
+    /// * `policy` - Verification policy
     #[wasm_bindgen(js_name = connect)]
-    pub async fn connect(ws_url: &str, server_name: &str) -> Result<RatlsHttp, JsValue> {
+    pub async fn connect(
+        ws_url: &str,
+        server_name: &str,
+        policy_js: JsValue,
+    ) -> Result<RatlsHttp, JsValue> {
+        // Parse policy from JS object
+        let policy: Policy = serde_wasm_bindgen::from_value(policy_js)
+            .map_err(|e| JsValue::from_str(&format!("invalid policy: {e}")))?;
+
         let (_meta, ws_stream) = WsMeta::connect(ws_url, None)
             .await
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
@@ -212,7 +256,7 @@ impl RatlsHttp {
         let (tls, report) = ratls_connect(
             ws_stream.into_io(),
             server_name,
-            Policy::default(),
+            policy,
             Some(vec!["http/1.1".into()]),
         )
         .await

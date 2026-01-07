@@ -310,8 +310,9 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { ratlsConnect, socketRead, socketWrite, socketClose, socketDestroy } = nativeBinding
+const { mergeWithDefaultAppCompose, ratlsConnect, socketRead, socketWrite, socketClose, socketDestroy } = nativeBinding
 
+module.exports.mergeWithDefaultAppCompose = mergeWithDefaultAppCompose
 module.exports.ratlsConnect = ratlsConnect
 module.exports.socketRead = socketRead
 module.exports.socketWrite = socketWrite

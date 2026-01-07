@@ -1,13 +1,44 @@
 /**
  * RA-TLS Fetch - Attested fetch for Trusted Execution Environments
  *
- * @example Simple usage
+ * @example Production usage with full verification
+ * ```js
+ * import { createRatlsFetch, mergeWithDefaultAppCompose } from "ratls-node"
+ *
+ * const policy = {
+ *   type: "dstack_tdx",
+ *   expected_bootchain: {
+ *     mrtd: "b24d3b24...",
+ *     rtmr0: "24c15e08...",
+ *     rtmr1: "6e1afb74...",
+ *     rtmr2: "89e73ced..."
+ *   },
+ *   os_image_hash: "86b18137...",
+ *   app_compose: mergeWithDefaultAppCompose({
+ *     docker_compose_file: "services:\n  app:\n    image: myapp",
+ *     allowed_envs: ["API_KEY"]
+ *   }),
+ *   allowed_tcb_status: ["UpToDate", "SWHardeningNeeded"]
+ * }
+ *
+ * const fetch = createRatlsFetch({ target: "enclave.example.com", policy })
+ * const response = await fetch("/api/data")
+ * console.log(response.attestation.teeType) // "tdx"
+ * ```
+ *
+ * @example Development only (NOT for production)
  * ```js
  * import { createRatlsFetch } from "ratls-node"
  *
- * const fetch = createRatlsFetch("enclave.example.com")
- * const response = await fetch("/api/data")
- * console.log(response.attestation.teeType) // "tdx"
+ * // WARNING: disable_runtime_verification skips bootchain/app_compose/os_image checks
+ * // Use ONLY for development/testing, NEVER in production
+ * const devPolicy = {
+ *   type: "dstack_tdx",
+ *   disable_runtime_verification: true,  // DEV ONLY
+ *   allowed_tcb_status: ["UpToDate", "SWHardeningNeeded", "OutOfDate"]
+ * }
+ *
+ * const fetch = createRatlsFetch({ target: "enclave.example.com", policy: devPolicy })
  * ```
  *
  * @example With AI SDK
@@ -17,6 +48,7 @@
  *
  * const fetch = createRatlsFetch({
  *   target: "enclave.example.com",
+ *   policy: productionPolicy,
  *   onAttestation: (att) => console.log("TEE:", att.teeType)
  * })
  * const openai = createOpenAI({ baseURL: "https://enclave.example.com/v1", fetch })
@@ -41,6 +73,7 @@ const {
   socketWrite,
   socketClose,
   socketDestroy,
+  mergeWithDefaultAppCompose,
 } = require("./index.cjs")
 
 /**
@@ -174,28 +207,31 @@ function createRatlsDuplex(socketId, attestation, meta) {
 /**
  * Create an https.Agent that establishes RATLS connections
  *
- * @param {string | RatlsAgentOptions} optionsOrTarget - Target host or options object
+ * @param {RatlsAgentOptions} options - Options object with target and policy
  * @returns {Agent} An https.Agent that uses RATLS sockets
  *
  * @example
- * // Simple: just provide the target
- * const agent = createRatlsAgent("enclave.example.com")
- *
- * @example
- * // Full options
+ * // Production usage with full verification
  * const agent = createRatlsAgent({
  *   target: "enclave.example.com:8443",
- *   serverName: "enclave.example.com",
+ *   policy: {
+ *     type: "dstack_tdx",
+ *     expected_bootchain: { mrtd: "...", rtmr0: "...", rtmr1: "...", rtmr2: "..." },
+ *     os_image_hash: "...",
+ *     app_compose: { docker_compose_file: "...", allowed_envs: [] },
+ *     allowed_tcb_status: ["UpToDate", "SWHardeningNeeded"]
+ *   },
  *   onAttestation: (attestation, socket) => {
- *     if (!attestation.trusted) throw new Error("Untrusted!")
+ *     console.log("Verified TEE:", attestation.teeType)
  *   }
  * })
  */
-export function createRatlsAgent(optionsOrTarget) {
-  const options =
-    typeof optionsOrTarget === "string"
-      ? { target: optionsOrTarget }
-      : optionsOrTarget
+export function createRatlsAgent(options) {
+  if (typeof options === "string") {
+    throw new Error(
+      "String shorthand no longer supported - policy is required. Use: { target, policy }"
+    )
+  }
 
   const targetRaw = options.target
   if (!targetRaw) {
@@ -204,16 +240,23 @@ export function createRatlsAgent(optionsOrTarget) {
     )
   }
 
+  const policy = options.policy
+  if (!policy) {
+    throw new Error(
+      "policy is required for RATLS verification. See docs for policy format."
+    )
+  }
+
   const parsed = parseTarget(targetRaw)
   const effectiveServerName = options.serverName || parsed.serverName
   const onAttestation = options.onAttestation
 
   // Extract agent-specific options
-  const { target, serverName, onAttestation: _, ...agentOptions } = options
+  const { target, serverName, onAttestation: _, policy: __, ...agentOptions } = options
 
   class RatlsAgent extends Agent {
     createConnection(connectOptions, callback) {
-      ratlsConnect(parsed.hostPort, effectiveServerName)
+      ratlsConnect(parsed.hostPort, effectiveServerName, policy)
         .then(({ socketId, attestation }) => {
           const socket = createRatlsDuplex(socketId, attestation, parsed)
 
@@ -243,26 +286,42 @@ export function createRatlsAgent(optionsOrTarget) {
  * Create a fetch function that uses RATLS for requests to the target,
  * and falls back to native global fetch for everything else.
  *
- * @param {string | RatlsFetchOptions} optionsOrTarget - Target host or options object
+ * @param {RatlsFetchOptions} options - Options object with target and policy
  * @returns {Function} A fetch-compatible function
  *
  * @example
- * const fetch = createRatlsFetch("enclave.example.com")
+ * const fetch = createRatlsFetch({
+ *   target: "enclave.example.com",
+ *   policy: {
+ *     type: "dstack_tdx",
+ *     expected_bootchain: { mrtd: "...", rtmr0: "...", rtmr1: "...", rtmr2: "..." },
+ *     os_image_hash: "...",
+ *     app_compose: { docker_compose_file: "...", allowed_envs: [] },
+ *     allowed_tcb_status: ["UpToDate", "SWHardeningNeeded"]
+ *   }
+ * })
  * const res = await fetch("/api/data", { method: "POST", body: JSON.stringify({}) })
  *
  * @example With AI SDK
- * const fetch = createRatlsFetch({ target: "enclave.example.com", onAttestation: console.log })
+ * const fetch = createRatlsFetch({ target: "enclave.example.com", policy, onAttestation: console.log })
  * const openai = createOpenAI({ baseURL: "https://enclave.example.com/v1", fetch })
  */
-export function createRatlsFetch(optionsOrTarget) {
-  const options =
-    typeof optionsOrTarget === "string"
-      ? { target: optionsOrTarget }
-      : optionsOrTarget
+export function createRatlsFetch(options) {
+  if (typeof options === "string") {
+    throw new Error(
+      "String shorthand no longer supported - policy is required. Use: { target, policy }"
+    )
+  }
 
   if (!options.target) {
     throw new Error(
       "target is required (e.g., 'enclave.example.com' or 'enclave.example.com:443')"
+    )
+  }
+
+  if (!options.policy) {
+    throw new Error(
+      "policy is required for RATLS verification. See docs for policy format."
     )
   }
 
@@ -456,5 +515,8 @@ function normalizeBody(body) {
   const buf = Buffer.from(String(body))
   return { body: buf, contentLength: buf.length, kind: "buffer" }
 }
+
+// Re-export merge utility for users to construct app_compose
+export { mergeWithDefaultAppCompose }
 
 export default createRatlsAgent
