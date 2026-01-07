@@ -6,6 +6,7 @@ use std::sync::{Arc, RwLock};
 use dcap_qvl::collateral::get_collateral;
 use dcap_qvl::verify::{verify, VerifiedReport};
 use dstack_sdk_types::dstack::{EventLog, GetQuoteResponse, TcbInfo};
+use log::debug;
 use sha2::{Digest, Sha256};
 
 use crate::dstack::compose_hash::get_compose_hash;
@@ -74,10 +75,14 @@ impl DstackTDXVerifier {
             pccs_url
         };
 
+        debug!("Fetching collateral from {}", pccs_url);
+
         // Get collateral from PCCS
         let collateral = get_collateral(pccs_url, quote)
             .await
             .map_err(|e| RatlsVerificationError::Quote(format!("Failed to get collateral: {}", e)))?;
+
+        debug!("Collateral received, verifying DCAP quote");
 
         // Get current time - platform specific
         #[cfg(not(target_arch = "wasm32"))]
@@ -93,13 +98,21 @@ impl DstackTDXVerifier {
         let report = verify(quote, &collateral, now_secs)
             .map_err(|e| RatlsVerificationError::Quote(format!("DCAP verification failed: {}", e)))?;
 
+        debug!("DCAP verification complete, TCB status: {}", report.status);
+
         // Check TCB status
-        if !self
+        let tcb_allowed = self
             .config
             .allowed_tcb_status
             .iter()
-            .any(|s| s == &report.status)
-        {
+            .any(|s| s == &report.status);
+
+        debug!(
+            "TCB status '{}' allowed: {}",
+            report.status, tcb_allowed
+        );
+
+        if !tcb_allowed {
             return Err(RatlsVerificationError::TcbStatusNotAllowed {
                 status: report.status.clone(),
                 allowed: self.config.allowed_tcb_status.clone(),
@@ -124,8 +137,15 @@ impl DstackTDXVerifier {
             RatlsVerificationError::Configuration("expected_bootchain is required".into())
         })?;
 
+        debug!("Verifying bootchain measurements");
+
         // Check MRTD (TcbInfo fields are already strings)
-        if tcb_info.mrtd != bootchain.mrtd {
+        debug!("MRTD expected: {}", bootchain.mrtd);
+        debug!("MRTD actual:   {}", tcb_info.mrtd);
+        let mrtd_match = tcb_info.mrtd == bootchain.mrtd;
+        debug!("MRTD match: {}", mrtd_match);
+
+        if !mrtd_match {
             return Err(RatlsVerificationError::BootchainMismatch {
                 field: "mrtd".into(),
                 expected: bootchain.mrtd.clone(),
@@ -140,7 +160,12 @@ impl DstackTDXVerifier {
             (&bootchain.rtmr2, &tcb_info.rtmr2, 2),
         ];
         for (expected, actual, idx) in rtmrs {
-            if expected != actual {
+            debug!("RTMR{} expected: {}", idx, expected);
+            debug!("RTMR{} actual:   {}", idx, actual);
+            let rtmr_match = expected == actual;
+            debug!("RTMR{} match: {}", idx, rtmr_match);
+
+            if !rtmr_match {
                 return Err(RatlsVerificationError::RtmrMismatch {
                     index: idx,
                     expected: expected.clone(),
@@ -148,12 +173,15 @@ impl DstackTDXVerifier {
                 });
             }
         }
+
+        debug!("Bootchain verification successful");
         Ok(())
     }
 
     /// Verify certificate is in event log (using dstack-sdk EventLog type).
     fn verify_cert_in_eventlog(&self, cert_der: &[u8], events: &[EventLog]) -> bool {
         let cert_hash = hex::encode(Sha256::digest(cert_der));
+        debug!("Certificate hash: {}", cert_hash);
 
         // Find last "New TLS Certificate" event
         let cert_event = events
@@ -167,14 +195,28 @@ impl DstackTDXVerifier {
                 match hex::decode(&event.event_payload) {
                     Ok(decoded) => {
                         match String::from_utf8(decoded) {
-                            Ok(eventlog_cert_hash) => eventlog_cert_hash == cert_hash,
-                            Err(_) => false,
+                            Ok(eventlog_cert_hash) => {
+                                debug!("Certificate hash from event log: {}", eventlog_cert_hash);
+                                let cert_match = eventlog_cert_hash == cert_hash;
+                                debug!("Certificate hash match: {}", cert_match);
+                                cert_match
+                            }
+                            Err(_) => {
+                                debug!("Failed to decode event log cert hash as UTF-8");
+                                false
+                            }
                         }
                     }
-                    Err(_) => false,
+                    Err(_) => {
+                        debug!("Failed to hex-decode event log payload");
+                        false
+                    }
                 }
             }
-            None => false,
+            None => {
+                debug!("No 'New TLS Certificate' event found in event log");
+                false
+            }
         }
     }
 
@@ -191,8 +233,14 @@ impl DstackTDXVerifier {
         })?;
         let expected = get_compose_hash(app_compose);
 
+        debug!("App compose hash expected: {}", expected);
+        debug!("App compose hash from TCB: {}", tcb_info.compose_hash);
+
         // First check against TcbInfo.compose_hash (string field)
-        if tcb_info.compose_hash != expected {
+        let tcb_match = tcb_info.compose_hash == expected;
+        debug!("App compose hash match (TCB): {}", tcb_match);
+
+        if !tcb_match {
             return Err(RatlsVerificationError::AppComposeHashMismatch {
                 expected: expected.clone(),
                 actual: tcb_info.compose_hash.clone(),
@@ -202,13 +250,19 @@ impl DstackTDXVerifier {
         // Then verify against event log
         let event = events.iter().find(|e| e.event == "compose-hash");
         if let Some(e) = event {
-            if e.event_payload != expected {
+            debug!("App compose hash from event log: {}", e.event_payload);
+            let eventlog_match = e.event_payload == expected;
+            debug!("App compose hash match (event log): {}", eventlog_match);
+
+            if !eventlog_match {
                 return Err(RatlsVerificationError::AppComposeHashMismatch {
                     expected,
                     actual: e.event_payload.clone(),
                 });
             }
         }
+
+        debug!("App compose verification successful");
         Ok(())
     }
 
@@ -224,24 +278,38 @@ impl DstackTDXVerifier {
             RatlsVerificationError::Configuration("os_image_hash is required".into())
         })?;
 
+        debug!("OS image hash expected: {}", expected);
+
         // Check against TcbInfo.os_image_hash (string field)
-        if !tcb_info.os_image_hash.is_empty() && &tcb_info.os_image_hash != expected {
-            return Err(RatlsVerificationError::OsImageHashMismatch {
-                expected: expected.clone(),
-                actual: Some(tcb_info.os_image_hash.clone()),
-            });
+        if !tcb_info.os_image_hash.is_empty() {
+            debug!("OS image hash from TCB: {}", tcb_info.os_image_hash);
+            let tcb_match = &tcb_info.os_image_hash == expected;
+            debug!("OS image hash match (TCB): {}", tcb_match);
+
+            if !tcb_match {
+                return Err(RatlsVerificationError::OsImageHashMismatch {
+                    expected: expected.clone(),
+                    actual: Some(tcb_info.os_image_hash.clone()),
+                });
+            }
         }
 
         // Check against event log
         let event = events.iter().find(|e| e.event == "os-image-hash");
         if let Some(e) = event {
-            if &e.event_payload != expected {
+            debug!("OS image hash from event log: {}", e.event_payload);
+            let eventlog_match = &e.event_payload == expected;
+            debug!("OS image hash match (event log): {}", eventlog_match);
+
+            if !eventlog_match {
                 return Err(RatlsVerificationError::OsImageHashMismatch {
                     expected: expected.clone(),
                     actual: Some(e.event_payload.clone()),
                 });
             }
         }
+
+        debug!("OS image hash verification successful");
         Ok(())
     }
 
@@ -251,6 +319,8 @@ impl DstackTDXVerifier {
         quote_response: &GetQuoteResponse,
         tcb_info: &TcbInfo,
     ) -> Result<(), RatlsVerificationError> {
+        debug!("Verifying RTMR replay");
+
         // Use dstack-sdk-types' built-in replay_rtmrs()
         let replayed: BTreeMap<u8, String> = quote_response
             .replay_rtmrs()
@@ -264,7 +334,12 @@ impl DstackTDXVerifier {
         ];
         for i in 0..4u8 {
             let replayed_rtmr = replayed.get(&i).cloned().unwrap_or_default();
-            if &replayed_rtmr != expected[i as usize] {
+            debug!("RTMR{} from TCB:    {}", i, expected[i as usize]);
+            debug!("RTMR{} replayed:    {}", i, replayed_rtmr);
+            let rtmr_match = &replayed_rtmr == expected[i as usize];
+            debug!("RTMR{} replay match: {}", i, rtmr_match);
+
+            if !rtmr_match {
                 return Err(RatlsVerificationError::RtmrMismatch {
                     index: i,
                     expected: expected[i as usize].clone(),
@@ -272,6 +347,8 @@ impl DstackTDXVerifier {
                 });
             }
         }
+
+        debug!("RTMR replay verification successful");
         Ok(())
     }
 }
@@ -287,25 +364,32 @@ impl RatlsVerifier for DstackTDXVerifier {
     where
         S: AsyncByteStream,
     {
+        debug!("Starting DStack TDX verification for {}", hostname);
+
         // 1. Generate nonce and get quote via HTTP POST to /tdx_quote
         let mut report_data = [0u8; 64];
         rand::Rng::fill(&mut rand::thread_rng(), &mut report_data);
         let (quote_response, tcb_info) = get_quote_over_http(stream, &report_data, hostname).await?;
 
         // 2. Parse event log using dstack-sdk-types
+        debug!("Parsing event log");
         let events = quote_response
             .decode_event_log()
             .map_err(|e| RatlsVerificationError::Other(e.into()))?;
+        debug!("Event log parsed, {} events found", events.len());
 
         // 3. Verify certificate in event log
+        debug!("Verifying certificate in event log");
         if !self.verify_cert_in_eventlog(peer_cert, &events) {
             return Err(RatlsVerificationError::CertificateNotInEventLog);
         }
 
         // 4. Verify DCAP quote using dcap-qvl directly
+        debug!("Decoding quote for DCAP verification");
         let quote_bytes = quote_response
             .decode_quote()
             .map_err(|e| RatlsVerificationError::Other(anyhow::anyhow!("Failed to decode quote: {}", e)))?;
+        debug!("Quote decoded ({} bytes)", quote_bytes.len());
 
         // Async quote verification - no blocking!
         let verified_report = self.verify_quote(&quote_bytes).await?;
@@ -315,6 +399,7 @@ impl RatlsVerifier for DstackTDXVerifier {
 
         // Skip remaining checks if runtime verification is disabled
         if self.config.disable_runtime_verification {
+            debug!("Runtime verification disabled, skipping bootchain/app-compose/os-image checks");
             return Ok(Report::Tdx(verified_report));
         }
 
@@ -327,6 +412,7 @@ impl RatlsVerifier for DstackTDXVerifier {
         // 8. Verify OS image hash
         self.verify_os_image_hash(&tcb_info, &events)?;
 
+        debug!("DStack TDX verification complete");
         Ok(Report::Tdx(verified_report))
     }
 }
@@ -342,25 +428,32 @@ impl RatlsVerifier for DstackTDXVerifier {
     where
         S: AsyncByteStream,
     {
+        debug!("Starting DStack TDX verification for {}", hostname);
+
         // 1. Generate nonce and get quote via HTTP POST to /tdx_quote
         let mut report_data = [0u8; 64];
         rand::Rng::fill(&mut rand::thread_rng(), &mut report_data);
         let (quote_response, tcb_info) = get_quote_over_http(stream, &report_data, hostname).await?;
 
         // 2. Parse event log using dstack-sdk-types
+        debug!("Parsing event log");
         let events = quote_response
             .decode_event_log()
             .map_err(|e| RatlsVerificationError::Other(e.into()))?;
+        debug!("Event log parsed, {} events found", events.len());
 
         // 3. Verify certificate in event log
+        debug!("Verifying certificate in event log");
         if !self.verify_cert_in_eventlog(peer_cert, &events) {
             return Err(RatlsVerificationError::CertificateNotInEventLog);
         }
 
         // 4. Verify DCAP quote using dcap-qvl directly
+        debug!("Decoding quote for DCAP verification");
         let quote_bytes = quote_response
             .decode_quote()
             .map_err(|e| RatlsVerificationError::Other(anyhow::anyhow!("Failed to decode quote: {}", e)))?;
+        debug!("Quote decoded ({} bytes)", quote_bytes.len());
 
         // Async quote verification - no blocking!
         let verified_report = self.verify_quote(&quote_bytes).await?;
@@ -370,6 +463,7 @@ impl RatlsVerifier for DstackTDXVerifier {
 
         // Skip remaining checks if runtime verification is disabled
         if self.config.disable_runtime_verification {
+            debug!("Runtime verification disabled, skipping bootchain/app-compose/os-image checks");
             return Ok(Report::Tdx(verified_report));
         }
 
@@ -382,6 +476,7 @@ impl RatlsVerifier for DstackTDXVerifier {
         // 8. Verify OS image hash
         self.verify_os_image_hash(&tcb_info, &events)?;
 
+        debug!("DStack TDX verification complete");
         Ok(Report::Tdx(verified_report))
     }
 }
@@ -395,6 +490,8 @@ async fn get_quote_over_http<S>(
 where
     S: AsyncByteStream,
 {
+    debug!("Sending POST /tdx_quote request to {}", hostname);
+
     // Build HTTP POST request for the /tdx_quote endpoint
     let body = serde_json::json!({
         "report_data_hex": hex::encode(report_data)
@@ -448,6 +545,8 @@ where
             }
         }
     }
+
+    debug!("Received quote response ({} bytes)", response_buf.len());
 
     // Parse HTTP response
     let body_start = find_http_body_start(&response_buf)

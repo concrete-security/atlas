@@ -3,6 +3,8 @@
 //! This module provides the `ratls_connect` function that combines TLS handshake
 //! with remote attestation verification in a single call.
 
+use log::debug;
+
 use crate::error::RatlsVerificationError;
 use crate::policy::Policy;
 use crate::verifier::{AsyncByteStream, Report};
@@ -44,6 +46,8 @@ pub async fn tls_handshake<S>(
 where
     S: AsyncByteStream + 'static,
 {
+    debug!("Starting TLS handshake to {}", server_name);
+
     let mut root_store = RootCertStore::empty();
     root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
 
@@ -71,6 +75,11 @@ where
         .and_then(|certs| certs.first())
         .map(|cert| cert.as_ref().to_vec())
         .ok_or(RatlsVerificationError::MissingCertificate)?;
+
+    debug!(
+        "TLS handshake complete, certificate received ({} bytes)",
+        peer_cert.len()
+    );
 
     Ok((tls_stream, peer_cert))
 }
@@ -121,12 +130,18 @@ pub async fn ratls_connect<S>(
 where
     S: AsyncByteStream + 'static,
 {
+    // Initialize logging (idempotent, only runs once)
+    crate::logging::init();
+
     let (mut tls_stream, peer_cert) = tls_handshake(stream, server_name, alpn).await?;
 
+    debug!("Starting attestation verification");
     let verifier = policy.into_verifier()?;
     let report = verifier
         .verify(&mut tls_stream, &peer_cert, server_name)
         .await?;
+
+    debug!("Attestation verification successful");
 
     Ok((tls_stream, report))
 }

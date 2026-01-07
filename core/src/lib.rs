@@ -83,6 +83,7 @@
 pub mod connect;
 pub mod dstack;
 pub mod error;
+pub mod logging;
 pub mod policy;
 pub mod tdx;
 pub mod verifier;

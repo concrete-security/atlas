@@ -7,6 +7,11 @@ license = "MIT"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+default = ["debug-logging"]
+# Enable debug logging (forwarded to ratls-core)
+debug-logging = ["ratls-core/debug-logging"]
+
 [dependencies]
 ratls-core = { path = "../core" }
 futures = "0.3"
