@@ -1,0 +1,31 @@
+# Caddy reverse proxy configuration for ratls-proxy
+# Replace {$DOMAIN} with your actual domain or use environment variable
+#
+# Usage:
+#   1. Copy to /etc/caddy/Caddyfile
+#   2. Replace proxy.example.com with your domain
+#   3. Run: sudo systemctl reload caddy
+#
+# Caddy will automatically obtain and renew TLS certificates from Let's Encrypt.
+
+proxy.example.com {
+    # WebSocket proxy to ratls-proxy
+    # The /tunnel path is where WebSocket clients connect
+    reverse_proxy /tunnel* localhost:9000 {
+        # WebSocket support is automatic in Caddy
+        # These timeouts are for long-lived WebSocket connections
+        transport http {
+            keepalive 30s
+            keepalive_idle_conns 10
+        }
+    }
+
+    # Health check endpoint
+    respond /health "OK" 200
+
+    # Logging
+    log {
+        output file /var/log/caddy/ratls-proxy.log
+        format json
+    }
+}
