@@ -5,7 +5,8 @@
  * Scenarios:
  *   1. Standard TLS: Direct HTTPS to TEE (no proxy, no attestation)
  *   2. TLS + Proxy: WebSocket tunnel to TEE (no attestation)
- *   3. RA-TLS + Proxy: WebSocket tunnel with full attestation via ratls-wasm
+ *   3. RA-TLS: Direct RA-TLS to TEE (no proxy, with attestation) via ratls-node
+ *   4. RA-TLS + Proxy: WebSocket tunnel with full attestation via ratls-wasm
  *
  * Usage: node benchmark.mjs [iterations]
  */
@@ -24,7 +25,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Polyfill WebSocket for WASM module (it expects browser WebSocket API)
 globalThis.WebSocket = WebSocket;
 
-// Load and initialize ratls-wasm library
+// Load ratls-node library (for direct RA-TLS)
+const ratlsNodePath = path.join(__dirname, '..', '..', '..', 'node');
+const { createRatlsFetch } = await import(path.join(ratlsNodePath, 'ratls-fetch.js'));
+
+// Load and initialize ratls-wasm library (for RA-TLS + Proxy)
 const wasmPkgPath = path.join(__dirname, '..', '..', 'pkg');
 const wasmModule = await import(path.join(wasmPkgPath, 'ratls_wasm.js'));
 const wasmBuffer = fs.readFileSync(path.join(wasmPkgPath, 'ratls_wasm_bg.wasm'));
@@ -256,7 +261,66 @@ async function proxyTls() {
 }
 
 /**
- * Scenario 3: RA-TLS + Proxy (full attestation via ratls-wasm)
+ * Scenario 3: RA-TLS direct (full attestation via ratls-node, no proxy)
+ */
+async function directRatls() {
+    const startTime = performance.now();
+    let attestationTime = null;
+
+    // Create RA-TLS fetch using ratls-node (direct TCP connection)
+    const policy = {
+        type: 'dstack_tdx',
+        disable_runtime_verification: true,
+        allowed_tcb_status: ['UpToDate', 'SWHardeningNeeded', 'OutOfDate', 'ConfigurationNeeded'],
+    };
+
+    const fetch = createRatlsFetch({
+        target: VLLM_HOST,
+        policy,
+        onAttestation: () => {
+            attestationTime = performance.now() - startTime;
+        }
+    });
+
+    // Make streaming request
+    const res = await fetch('/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(CHAT_REQUEST),
+    });
+
+    if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+    }
+
+    // Parse SSE stream
+    const parser = createSSEParser(startTime);
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        parser.feed(decoder.decode(value, { stream: true }));
+    }
+
+    const totalTime = performance.now() - startTime;
+    const { ttft, usage } = parser.getResults();
+    const tokens = usage?.completion_tokens || 0;
+    const throughput = tokens > 0 ? (tokens / (totalTime / 1000)) : 0;
+
+    return {
+        success: tokens > 0,
+        ttft,
+        totalTime,
+        tokens,
+        throughput,
+        attestationTime,
+    };
+}
+
+/**
+ * Scenario 4: RA-TLS + Proxy (full attestation via ratls-wasm)
  */
 async function proxyRatls() {
     const startTime = performance.now();
@@ -380,6 +444,11 @@ async function main() {
     } catch (e) { console.log(`  TLS + Proxy: FAILED - ${e.message}`); }
 
     try {
+        const r = await directRatls();
+        console.log(`  RA-TLS: ${r.tokens} tokens, attestation=${r.attestationTime?.toFixed(0)}ms, total=${r.totalTime.toFixed(0)}ms`);
+    } catch (e) { console.log(`  RA-TLS: FAILED - ${e.message}`); }
+
+    try {
         const r = await proxyRatls();
         console.log(`  RA-TLS + Proxy: ${r.tokens} tokens, attestation=${r.attestationTime?.toFixed(0)}ms (${r.attestation?.teeType}/${r.attestation?.tcbStatus}), total=${r.totalTime.toFixed(0)}ms`);
     } catch (e) { console.log(`  RA-TLS + Proxy: FAILED - ${e.message}`); }
@@ -389,68 +458,63 @@ async function main() {
     console.log('Running benchmarks...');
     const std = await benchmark('Standard TLS', standardTls, ITERATIONS);
     const proxy = await benchmark('TLS + Proxy', proxyTls, ITERATIONS);
-    const ratls = await benchmark('RA-TLS + Proxy', proxyRatls, ITERATIONS);
+    const ratlsDirect = await benchmark('RA-TLS', directRatls, ITERATIONS);
+    const ratlsProxy = await benchmark('RA-TLS + Proxy', proxyRatls, ITERATIONS);
 
     // Results
-    console.log('\n' + '═'.repeat(60));
+    console.log('\n' + '═'.repeat(80));
     console.log('RESULTS');
-    console.log('═'.repeat(60));
+    console.log('═'.repeat(80));
 
-    const ttft1 = stats(std.ttft), ttft2 = stats(proxy.ttft), ttft3 = stats(ratls.ttft);
-    const thru1 = stats(std.throughput), thru2 = stats(proxy.throughput), thru3 = stats(ratls.throughput);
-    const gen1 = stats(std.genThroughput), gen2 = stats(proxy.genThroughput), gen3 = stats(ratls.genThroughput);
-    const total1 = stats(std.total), total2 = stats(proxy.total), total3 = stats(ratls.total);
-    const att = stats(ratls.attestation);
+    const ttft1 = stats(std.ttft), ttft2 = stats(proxy.ttft);
+    const ttft3 = stats(ratlsDirect.ttft), ttft4 = stats(ratlsProxy.ttft);
+    const thru1 = stats(std.throughput), thru2 = stats(proxy.throughput);
+    const thru3 = stats(ratlsDirect.throughput), thru4 = stats(ratlsProxy.throughput);
+    const gen1 = stats(std.genThroughput), gen2 = stats(proxy.genThroughput);
+    const gen3 = stats(ratlsDirect.genThroughput), gen4 = stats(ratlsProxy.genThroughput);
+    const total1 = stats(std.total), total2 = stats(proxy.total);
+    const total3 = stats(ratlsDirect.total), total4 = stats(ratlsProxy.total);
+    const att3 = stats(ratlsDirect.attestation), att4 = stats(ratlsProxy.attestation);
 
     const avgTok = arr => arr.length ? (arr.reduce((a,b)=>a+b,0)/arr.length).toFixed(0) : 'N/A';
 
-    console.log('\n┌─────────────────────┬──────────────┬──────────────┬──────────────┐');
-    console.log('│ Metric              │ Standard TLS │ TLS + Proxy  │ RA-TLS+Proxy │');
-    console.log('├─────────────────────┼──────────────┼──────────────┼──────────────┤');
-    console.log(`│ TTFT mean           │ ${ttft1.mean.padStart(9)}ms │ ${ttft2.mean.padStart(9)}ms │ ${ttft3.mean.padStart(9)}ms │`);
-    console.log(`│ TTFT p50            │ ${ttft1.p50.padStart(9)}ms │ ${ttft2.p50.padStart(9)}ms │ ${ttft3.p50.padStart(9)}ms │`);
-    console.log(`│ TTFT p95            │ ${ttft1.p95.padStart(9)}ms │ ${ttft2.p95.padStart(9)}ms │ ${ttft3.p95.padStart(9)}ms │`);
-    console.log('├─────────────────────┼──────────────┼──────────────┼──────────────┤');
-    console.log(`│ Eff. Throughput     │ ${thru1.mean.padStart(8)} t/s │ ${thru2.mean.padStart(8)} t/s │ ${thru3.mean.padStart(8)} t/s │`);
-    console.log(`│ Gen. Throughput     │ ${gen1.mean.padStart(8)} t/s │ ${gen2.mean.padStart(8)} t/s │ ${gen3.mean.padStart(8)} t/s │`);
-    console.log('├─────────────────────┼──────────────┼──────────────┼──────────────┤');
-    console.log(`│ Total time mean     │ ${total1.mean.padStart(9)}ms │ ${total2.mean.padStart(9)}ms │ ${total3.mean.padStart(9)}ms │`);
-    console.log(`│ Tokens (avg)        │ ${avgTok(std.tokens).padStart(12)} │ ${avgTok(proxy.tokens).padStart(12)} │ ${avgTok(ratls.tokens).padStart(12)} │`);
-    console.log('└─────────────────────┴──────────────┴──────────────┴──────────────┘');
-
-    // RA-TLS specific stats
-    if (ratls.attestation.length > 0) {
-        console.log('\n┌─────────────────────────────────────────────────────────────┐');
-        console.log('│ RA-TLS Attestation Breakdown                                │');
-        console.log('├─────────────────────────────────────────────────────────────┤');
-        console.log(`│ Attestation time (mean):  ${att.mean.padStart(6)}ms                           │`);
-        console.log(`│ Attestation time (p50):   ${att.p50.padStart(6)}ms                           │`);
-        console.log(`│ Attestation time (p95):   ${att.p95.padStart(6)}ms                           │`);
-        console.log('│                                                             │');
-        console.log('│ Includes: WS connect + TLS + quote fetch + collateral +     │');
-        console.log('│           DCAP verification (all via WASM module)           │');
-        console.log('└─────────────────────────────────────────────────────────────┘');
-    }
+    console.log('\n┌─────────────────────┬──────────────┬──────────────┬──────────────┬──────────────┐');
+    console.log('│ Metric              │ Standard TLS │ TLS + Proxy  │ RA-TLS       │ RA-TLS+Proxy │');
+    console.log('├─────────────────────┼──────────────┼──────────────┼──────────────┼──────────────┤');
+    console.log(`│ TTFT mean           │ ${ttft1.mean.padStart(9)}ms │ ${ttft2.mean.padStart(9)}ms │ ${ttft3.mean.padStart(9)}ms │ ${ttft4.mean.padStart(9)}ms │`);
+    console.log(`│ TTFT p50            │ ${ttft1.p50.padStart(9)}ms │ ${ttft2.p50.padStart(9)}ms │ ${ttft3.p50.padStart(9)}ms │ ${ttft4.p50.padStart(9)}ms │`);
+    console.log(`│ TTFT p95            │ ${ttft1.p95.padStart(9)}ms │ ${ttft2.p95.padStart(9)}ms │ ${ttft3.p95.padStart(9)}ms │ ${ttft4.p95.padStart(9)}ms │`);
+    console.log('├─────────────────────┼──────────────┼──────────────┼──────────────┼──────────────┤');
+    console.log(`│ Eff. Throughput     │ ${thru1.mean.padStart(8)} t/s │ ${thru2.mean.padStart(8)} t/s │ ${thru3.mean.padStart(8)} t/s │ ${thru4.mean.padStart(8)} t/s │`);
+    console.log(`│ Gen. Throughput     │ ${gen1.mean.padStart(8)} t/s │ ${gen2.mean.padStart(8)} t/s │ ${gen3.mean.padStart(8)} t/s │ ${gen4.mean.padStart(8)} t/s │`);
+    console.log('├─────────────────────┼──────────────┼──────────────┼──────────────┼──────────────┤');
+    console.log(`│ Total time mean     │ ${total1.mean.padStart(9)}ms │ ${total2.mean.padStart(9)}ms │ ${total3.mean.padStart(9)}ms │ ${total4.mean.padStart(9)}ms │`);
+    console.log(`│ Attestation mean    │          N/A │          N/A │ ${att3.mean.padStart(9)}ms │ ${att4.mean.padStart(9)}ms │`);
+    console.log(`│ Tokens (avg)        │ ${avgTok(std.tokens).padStart(12)} │ ${avgTok(proxy.tokens).padStart(12)} │ ${avgTok(ratlsDirect.tokens).padStart(12)} │ ${avgTok(ratlsProxy.tokens).padStart(12)} │`);
+    console.log('└─────────────────────┴──────────────┴──────────────┴──────────────┴──────────────┘');
 
     // Overhead analysis
-    if (std.ttft.length && proxy.ttft.length && ratls.ttft.length) {
+    if (std.ttft.length && proxy.ttft.length && ratlsDirect.ttft.length && ratlsProxy.ttft.length) {
         const baseT = std.ttft.reduce((a,b)=>a+b,0) / std.ttft.length;
         const proxyT = proxy.ttft.reduce((a,b)=>a+b,0) / proxy.ttft.length;
-        const ratlsT = ratls.ttft.reduce((a,b)=>a+b,0) / ratls.ttft.length;
+        const ratlsDirectT = ratlsDirect.ttft.reduce((a,b)=>a+b,0) / ratlsDirect.ttft.length;
+        const ratlsProxyT = ratlsProxy.ttft.reduce((a,b)=>a+b,0) / ratlsProxy.ttft.length;
 
-        console.log('\n' + '─'.repeat(60));
-        console.log('OVERHEAD ANALYSIS');
-        console.log('─'.repeat(60));
-        console.log(`Proxy overhead (vs Standard):     +${(proxyT - baseT).toFixed(0)}ms`);
-        console.log(`RA-TLS overhead (vs Standard):    +${(ratlsT - baseT).toFixed(0)}ms`);
-        console.log(`RA-TLS overhead (vs Proxy only):  +${(ratlsT - proxyT).toFixed(0)}ms`);
-        console.log('─'.repeat(60));
+        console.log('\n' + '─'.repeat(80));
+        console.log('OVERHEAD ANALYSIS (TTFT vs Standard TLS)');
+        console.log('─'.repeat(80));
+        console.log(`Proxy overhead:       TLS+Proxy - Standard     = +${(proxyT - baseT).toFixed(0)}ms`);
+        console.log(`RA-TLS overhead:      RA-TLS - Standard        = +${(ratlsDirectT - baseT).toFixed(0)}ms`);
+        console.log(`RA-TLS+Proxy:         RA-TLS+Proxy - Standard  = +${(ratlsProxyT - baseT).toFixed(0)}ms`);
+        console.log('─'.repeat(80));
+        console.log('Note: RA-TLS uses ratls-node, RA-TLS+Proxy uses ratls-wasm (different implementations)');
     }
 
     console.log('\nNotes:');
-    console.log('  - Standard TLS: Direct HTTPS connection to TEE');
-    console.log('  - TLS + Proxy: WebSocket tunnel, no attestation');
-    console.log('  - RA-TLS + Proxy: Full attestation via ratls-wasm (WebSocket)');
+    console.log('  - Standard TLS: Direct HTTPS connection to TEE (Node.js built-in)');
+    console.log('  - TLS + Proxy: WebSocket tunnel, no attestation (Node.js built-in TLS)');
+    console.log('  - RA-TLS: Direct RA-TLS connection via ratls-node (full attestation)');
+    console.log('  - RA-TLS + Proxy: WebSocket tunnel via ratls-wasm (full attestation)');
     console.log('  - Gen. Throughput excludes TTFT (pure generation speed)');
 }
 
