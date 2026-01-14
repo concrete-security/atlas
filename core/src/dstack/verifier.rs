@@ -216,9 +216,9 @@ impl DstackTDXVerifier {
 
         // Get the trusted TD report from DCAP verification
         let td_report = verified_report.report.as_td10().ok_or_else(|| {
-            RatlsVerificationError::Other(anyhow::anyhow!(
-                "Expected TDX report but got SGX enclave report"
-            ))
+            RatlsVerificationError::TeeTypeMismatch(
+                "expected TDX report but got SGX enclave report".into(),
+            )
         })?;
 
         debug!("Verifying bootchain measurements against verified report");
@@ -266,7 +266,14 @@ impl DstackTDXVerifier {
     }
 
     /// Verify certificate is in event log (using dstack-sdk EventLog type).
-    fn verify_cert_in_eventlog(&self, cert_der: &[u8], events: &[EventLog]) -> bool {
+    ///
+    /// Returns Ok(true) if cert matches, Ok(false) if cert not found,
+    /// or Err if parsing fails.
+    fn verify_cert_in_eventlog(
+        &self,
+        cert_der: &[u8],
+        events: &[EventLog],
+    ) -> Result<bool, RatlsVerificationError> {
         let cert_hash = hex::encode(Sha256::digest(cert_der));
         debug!("Certificate hash: {}", cert_hash);
 
@@ -278,31 +285,28 @@ impl DstackTDXVerifier {
         match cert_event {
             Some(event) => {
                 // event_payload is hex-encoded, decode it to get the cert hash string
-                // Format: hex_encode(cert_hash_string.encode()) -> decode to get cert_hash_string
-                match hex::decode(&event.event_payload) {
-                    Ok(decoded) => {
-                        match String::from_utf8(decoded) {
-                            Ok(eventlog_cert_hash) => {
-                                debug!("Certificate hash from event log: {}", eventlog_cert_hash);
-                                let cert_match = eventlog_cert_hash == cert_hash;
-                                debug!("Certificate hash match: {}", cert_match);
-                                cert_match
-                            }
-                            Err(_) => {
-                                debug!("Failed to decode event log cert hash as UTF-8");
-                                false
-                            }
-                        }
-                    }
-                    Err(_) => {
-                        debug!("Failed to hex-decode event log payload");
-                        false
-                    }
-                }
+                let decoded = hex::decode(&event.event_payload).map_err(|e| {
+                    RatlsVerificationError::EventLogParse(format!(
+                        "failed to hex-decode certificate event payload: {}",
+                        e
+                    ))
+                })?;
+
+                let eventlog_cert_hash = String::from_utf8(decoded).map_err(|e| {
+                    RatlsVerificationError::EventLogParse(format!(
+                        "certificate event payload is not valid UTF-8: {}",
+                        e
+                    ))
+                })?;
+
+                debug!("Certificate hash from event log: {}", eventlog_cert_hash);
+                let cert_match = eventlog_cert_hash == cert_hash;
+                debug!("Certificate hash match: {}", cert_match);
+                Ok(cert_match)
             }
             None => {
                 debug!("No 'New TLS Certificate' event found in event log");
-                false
+                Ok(false)
             }
         }
     }
@@ -404,9 +408,9 @@ impl DstackTDXVerifier {
 
         // Get the trusted TD report from DCAP verification
         let td_report = verified_report.report.as_td10().ok_or_else(|| {
-            RatlsVerificationError::Other(anyhow::anyhow!(
-                "Expected TDX report but got SGX enclave report"
-            ))
+            RatlsVerificationError::TeeTypeMismatch(
+                "expected TDX report but got SGX enclave report".into(),
+            )
         })?;
 
         // Use dstack-sdk-types' built-in replay_rtmrs()
@@ -463,9 +467,9 @@ impl DstackTDXVerifier {
 
         // Get the trusted TD report from DCAP verification
         let td_report = verified_report.report.as_td10().ok_or_else(|| {
-            RatlsVerificationError::Other(anyhow::anyhow!(
-                "Expected TDX report but got SGX enclave report"
-            ))
+            RatlsVerificationError::TeeTypeMismatch(
+                "expected TDX report but got SGX enclave report".into(),
+            )
         })?;
 
         let expected = hex::encode(report_data);
@@ -509,7 +513,8 @@ impl RatlsVerifier for DstackTDXVerifier {
 
         // 3. Verify certificate in event log
         debug!("Verifying certificate in event log");
-        if !self.verify_cert_in_eventlog(peer_cert, &events) {
+        let cert_in_eventlog = self.verify_cert_in_eventlog(peer_cert, &events)?;
+        if !cert_in_eventlog {
             return Err(RatlsVerificationError::CertificateNotInEventLog);
         }
 

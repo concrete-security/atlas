@@ -33,6 +33,14 @@ pub enum RatlsVerificationError {
     #[error("certificate not in event log")]
     CertificateNotInEventLog,
 
+    /// Event log parsing failed.
+    #[error("failed to parse event log: {0}")]
+    EventLogParse(String),
+
+    /// TEE type mismatch.
+    #[error("TEE type mismatch: {0}")]
+    TeeTypeMismatch(String),
+
     /// App compose hash mismatch.
     #[error("app compose hash mismatch: expected {expected}, got {actual}")]
     AppComposeHashMismatch { expected: String, actual: String },

@@ -1,7 +1,7 @@
 //! DStack-specific policy types.
 
 use crate::dstack::{DstackTDXVerifier, DstackTDXVerifierBuilder};
-use crate::tdx::ExpectedBootchain;
+use crate::tdx::{ExpectedBootchain, TCB_STATUS_LIST};
 use crate::verifier::IntoVerifier;
 use crate::RatlsVerificationError;
 use serde::{Deserialize, Serialize};
@@ -68,6 +68,11 @@ impl Default for DstackTdxPolicy {
     }
 }
 
+/// Check if a string is a valid lowercase hex string.
+fn is_valid_hex(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+}
+
 impl DstackTdxPolicy {
     /// Relaxed policy for development.
     ///
@@ -84,12 +89,68 @@ impl DstackTdxPolicy {
             ..Default::default()
         }
     }
+
+    /// Validate the policy configuration.
+    ///
+    /// Checks that:
+    /// - `allowed_tcb_status` values are valid TCB status strings
+    /// - `os_image_hash` is a valid hex string (if provided)
+    /// - `expected_bootchain` fields are valid hex strings (if provided)
+    pub fn validate(&self) -> Result<(), RatlsVerificationError> {
+        // Validate TCB status values
+        for status in &self.allowed_tcb_status {
+            if !TCB_STATUS_LIST.contains(&status.as_str()) {
+                return Err(RatlsVerificationError::Configuration(format!(
+                    "invalid TCB status '{}', valid values are: {:?}",
+                    status, TCB_STATUS_LIST
+                )));
+            }
+        }
+
+        // Validate os_image_hash is hex
+        if let Some(ref hash) = self.os_image_hash {
+            if !is_valid_hex(hash) {
+                return Err(RatlsVerificationError::Configuration(
+                    "os_image_hash must be a lowercase hex string".into(),
+                ));
+            }
+        }
+
+        // Validate bootchain fields are hex
+        if let Some(ref bootchain) = self.expected_bootchain {
+            if !is_valid_hex(&bootchain.mrtd) {
+                return Err(RatlsVerificationError::Configuration(
+                    "expected_bootchain.mrtd must be a lowercase hex string".into(),
+                ));
+            }
+            if !is_valid_hex(&bootchain.rtmr0) {
+                return Err(RatlsVerificationError::Configuration(
+                    "expected_bootchain.rtmr0 must be a lowercase hex string".into(),
+                ));
+            }
+            if !is_valid_hex(&bootchain.rtmr1) {
+                return Err(RatlsVerificationError::Configuration(
+                    "expected_bootchain.rtmr1 must be a lowercase hex string".into(),
+                ));
+            }
+            if !is_valid_hex(&bootchain.rtmr2) {
+                return Err(RatlsVerificationError::Configuration(
+                    "expected_bootchain.rtmr2 must be a lowercase hex string".into(),
+                ));
+            }
+        }
+
+        Ok(())
+    }
 }
 
 impl IntoVerifier for DstackTdxPolicy {
     type Verifier = DstackTDXVerifier;
 
     fn into_verifier(self) -> Result<DstackTDXVerifier, RatlsVerificationError> {
+        // Validate configuration before building
+        self.validate()?;
+
         let mut builder = DstackTDXVerifierBuilder::new();
 
         // Only disable runtime verification if explicitly requested
@@ -166,5 +227,71 @@ mod tests {
         let policy = DstackTdxPolicy::dev();
         let result = policy.into_verifier();
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_invalid_tcb_status_rejected() {
+        let policy = DstackTdxPolicy {
+            allowed_tcb_status: vec!["InvalidStatus".into()],
+            disable_runtime_verification: true,
+            ..Default::default()
+        };
+        let result = policy.validate();
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("invalid TCB status"));
+    }
+
+    #[test]
+    fn test_invalid_hex_os_image_hash_rejected() {
+        let policy = DstackTdxPolicy {
+            os_image_hash: Some("not-valid-hex!".into()),
+            disable_runtime_verification: true,
+            ..Default::default()
+        };
+        let result = policy.validate();
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("os_image_hash must be a lowercase hex string"));
+    }
+
+    #[test]
+    fn test_uppercase_hex_rejected() {
+        let policy = DstackTdxPolicy {
+            os_image_hash: Some("ABCD1234".into()),
+            disable_runtime_verification: true,
+            ..Default::default()
+        };
+        let result = policy.validate();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_valid_hex_accepted() {
+        let policy = DstackTdxPolicy {
+            os_image_hash: Some("abcd1234".into()),
+            disable_runtime_verification: true,
+            ..Default::default()
+        };
+        let result = policy.validate();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_invalid_bootchain_hex_rejected() {
+        let policy = DstackTdxPolicy {
+            expected_bootchain: Some(ExpectedBootchain {
+                mrtd: "invalid_hex".into(),
+                rtmr0: "abc123".into(),
+                rtmr1: "def456".into(),
+                rtmr2: "789abc".into(),
+            }),
+            disable_runtime_verification: true,
+            ..Default::default()
+        };
+        let result = policy.validate();
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("mrtd"));
     }
 }
