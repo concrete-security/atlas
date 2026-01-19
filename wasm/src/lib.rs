@@ -217,23 +217,29 @@ impl AttestedStream {
 // HTTP Client using hyper (secure, battle-tested HTTP/1.1 implementation)
 // ============================================================================
 
+use hyper::client::conn::http1::SendRequest;
+
 /// High-level HTTP client over attested TLS using hyper.
 ///
 /// This implementation uses hyper's HTTP/1.1 client connection API which:
 /// - Prevents CRLF injection attacks through proper header validation
 /// - Correctly handles all transfer encodings (chunked, content-length, close-delimited)
 /// - Is a battle-tested, widely-used HTTP implementation
+/// - Supports connection reuse via HTTP/1.1 keep-alive
 #[wasm_bindgen]
 pub struct RatlsHttp {
-    /// The TLS stream wrapped for hyper compatibility.
-    /// Using Option to allow taking ownership for the connection.
-    tls_stream: Rc<RefCell<Option<TlsStream<WsIo>>>>,
+    /// The hyper HTTP/1.1 sender - can make multiple requests on the same connection.
+    /// Stored as Option to allow detecting when the connection is closed.
+    sender: Rc<RefCell<Option<SendRequest<Full<Bytes>>>>>,
     attestation: AttestationSummary,
 }
 
 #[wasm_bindgen]
 impl RatlsHttp {
     /// Connect to a TEE server and perform RA-TLS handshake.
+    ///
+    /// This establishes an HTTP/1.1 connection that can be reused for multiple requests.
+    /// The connection uses HTTP keep-alive by default.
     ///
     /// # Arguments
     /// * `ws_url` - WebSocket URL (e.g., "ws://proxy:9000?target=host:443")
@@ -271,8 +277,27 @@ impl RatlsHttp {
             },
         };
 
+        // Wrap TLS stream for hyper compatibility
+        let io = HyperIo::new(tls);
+
+        // Perform HTTP/1.1 handshake with hyper
+        let (sender, conn) = http1::handshake(io)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("HTTP handshake failed: {e}")))?;
+
+        // Spawn the connection driver in the background
+        // This handles the actual HTTP protocol I/O and keeps the connection alive
+        wasm_bindgen_futures::spawn_local(async move {
+            if let Err(e) = conn.await {
+                // Log connection errors (in WASM, we can't easily propagate these)
+                web_sys::console::warn_1(&JsValue::from_str(&format!(
+                    "HTTP connection error: {e}"
+                )));
+            }
+        });
+
         Ok(RatlsHttp {
-            tls_stream: Rc::new(RefCell::new(Some(tls))),
+            sender: Rc::new(RefCell::new(Some(sender))),
             attestation,
         })
     }
@@ -284,6 +309,24 @@ impl RatlsHttp {
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
+    /// Check if the connection is ready for another request.
+    ///
+    /// Returns true if the connection can accept a new request, false if closed or busy.
+    #[wasm_bindgen(js_name = isReady)]
+    pub fn is_ready(&self) -> bool {
+        self.sender
+            .borrow()
+            .as_ref()
+            .map(|s| s.is_ready())
+            .unwrap_or(false)
+    }
+
+    /// Close the connection explicitly.
+    #[wasm_bindgen(js_name = close)]
+    pub fn close(&self) {
+        self.sender.borrow_mut().take();
+    }
+
     /// Perform an HTTP request and return response with streaming body.
     ///
     /// Returns a JS object: { status, statusText, headers, body }
@@ -291,6 +334,9 @@ impl RatlsHttp {
     ///
     /// This method uses hyper's HTTP/1.1 client which properly validates
     /// headers (preventing CRLF injection) and handles transfer encodings.
+    ///
+    /// The connection can be reused for subsequent requests after the response
+    /// body is fully consumed. Use `isReady()` to check availability.
     #[wasm_bindgen(js_name = fetch)]
     pub async fn fetch(
         &self,
@@ -300,31 +346,19 @@ impl RatlsHttp {
         headers_js: JsValue,
         body: Option<Vec<u8>>,
     ) -> Result<JsValue, JsValue> {
-        // Take the TLS stream (this consumes the connection for this request)
-        let tls_stream = self
-            .tls_stream
-            .borrow_mut()
-            .take()
-            .ok_or_else(|| JsValue::from_str("connection already used or closed"))?;
+        // Borrow the sender mutably to send the request
+        // We don't take() it - the connection stays alive for reuse
+        let mut sender_guard = self.sender.borrow_mut();
+        let sender = sender_guard
+            .as_mut()
+            .ok_or_else(|| JsValue::from_str("connection closed"))?;
 
-        // Wrap for hyper compatibility
-        let io = HyperIo::new(tls_stream);
-
-        // Perform HTTP/1.1 handshake with hyper
-        let (mut sender, conn) = http1::handshake(io)
-            .await
-            .map_err(|e| JsValue::from_str(&format!("HTTP handshake failed: {e}")))?;
-
-        // Spawn the connection driver in the background
-        // This handles the actual HTTP protocol I/O
-        wasm_bindgen_futures::spawn_local(async move {
-            if let Err(e) = conn.await {
-                // Log connection errors (in WASM, we can't easily propagate these)
-                web_sys::console::warn_1(&JsValue::from_str(&format!(
-                    "HTTP connection error: {e}"
-                )));
-            }
-        });
+        // Check if the connection is ready (not busy with another request)
+        if !sender.is_ready() {
+            return Err(JsValue::from_str(
+                "connection busy - wait for previous response to complete",
+            ));
+        }
 
         // Parse headers from JS
         let custom_headers: Vec<(String, String)> =
@@ -342,16 +376,18 @@ impl RatlsHttp {
         let body_bytes = body.unwrap_or_default();
         let body = Full::new(Bytes::from(body_bytes.clone()));
 
+        // Note: We intentionally do NOT set "Connection: close" here
+        // This allows HTTP/1.1 keep-alive for connection reuse
         let mut builder = Request::builder()
             .method(method)
             .uri(path)
-            .header("Host", host)
-            .header("Connection", "close");
+            .header("Host", host);
 
         // Add custom headers (hyper will validate them)
         for (name, value) in &custom_headers {
             let name_lower = name.to_lowercase();
-            if name_lower != "host" && name_lower != "connection" {
+            // Don't allow overriding Host, but allow Connection if user wants to close
+            if name_lower != "host" {
                 builder = builder.header(name.as_str(), value.as_str());
             }
         }
@@ -388,6 +424,7 @@ impl RatlsHttp {
 
         // Create ReadableStream from hyper body
         // hyper handles chunked decoding automatically!
+        // Note: The connection becomes ready for reuse after the body is fully consumed
         let body_stream = create_hyper_body_stream(response.into_body());
 
         // Build JS response object
