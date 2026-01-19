@@ -1,0 +1,38 @@
+[Unit]
+Description=RA-TLS WebSocket Proxy
+Documentation=https://github.com/your-org/secure-channel
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+
+# Configuration via environment file
+EnvironmentFile=/etc/ratls-proxy/env
+
+# Binary location
+ExecStart=/usr/local/bin/ratls-proxy
+
+# Restart policy
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+
+# Resource limits
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

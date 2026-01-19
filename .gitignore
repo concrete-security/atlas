@@ -1,5 +1,4 @@
 target/
-node/target/
-node/node_modules/
+node_modules/
 .DS_Store
 *.node
