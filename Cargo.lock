@@ -102,6 +102,85 @@ dependencies = [
 ]
 
 [[package]]
+name = "atls-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "console_log",
+ "dcap-qvl",
+ "dstack-sdk-types",
+ "env_logger",
+ "futures",
+ "futures-rustls",
+ "getrandom 0.2.16",
+ "hex",
+ "js-sys",
+ "log",
+ "rand 0.8.5",
+ "reqwest",
+ "rustls",
+ "rustls-pki-types",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.17",
+ "tokio",
+ "tokio-rustls",
+ "webpki-roots 0.26.11",
+]
+
+[[package]]
+name = "atls-node"
+version = "0.1.0"
+dependencies = [
+ "atls-core",
+ "bytes",
+ "napi",
+ "napi-build",
+ "napi-derive",
+ "once_cell",
+ "rustls",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+]
+
+[[package]]
+name = "atls-proxy"
+version = "0.0.1"
+dependencies = [
+ "futures-util",
+ "http",
+ "tokio",
+ "tokio-tungstenite",
+ "url",
+]
+
+[[package]]
+name = "atls-wasm"
+version = "0.1.0"
+dependencies = [
+ "async_io_stream",
+ "atls-core",
+ "bytes",
+ "futures",
+ "http",
+ "http-body-util",
+ "hyper",
+ "pin-project-lite",
+ "serde",
+ "serde-wasm-bindgen",
+ "serde_json",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wasm-bindgen-test",
+ "wasm-streams",
+ "web-sys",
+ "ws_stream_wasm",
+]
+
+[[package]]
 name = "atomic-waker"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1850,85 +1929,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "99d9a13982dcf210057a8a78572b2217b667c3beacbf3a0d8b454f6f82837d38"
 dependencies = [
  "getrandom 0.3.4",
-]
-
-[[package]]
-name = "ratls-core"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "console_log",
- "dcap-qvl",
- "dstack-sdk-types",
- "env_logger",
- "futures",
- "futures-rustls",
- "getrandom 0.2.16",
- "hex",
- "js-sys",
- "log",
- "rand 0.8.5",
- "reqwest",
- "rustls",
- "rustls-pki-types",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.17",
- "tokio",
- "tokio-rustls",
- "webpki-roots 0.26.11",
-]
-
-[[package]]
-name = "ratls-node"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "napi",
- "napi-build",
- "napi-derive",
- "once_cell",
- "ratls-core",
- "rustls",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
- "tokio",
-]
-
-[[package]]
-name = "ratls-proxy"
-version = "0.0.1"
-dependencies = [
- "futures-util",
- "http",
- "tokio",
- "tokio-tungstenite",
- "url",
-]
-
-[[package]]
-name = "ratls-wasm"
-version = "0.1.0"
-dependencies = [
- "async_io_stream",
- "bytes",
- "futures",
- "http",
- "http-body-util",
- "hyper",
- "pin-project-lite",
- "ratls-core",
- "serde",
- "serde-wasm-bindgen",
- "serde_json",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "wasm-bindgen-test",
- "wasm-streams",
- "web-sys",
- "ws_stream_wasm",
 ]
 
 [[package]]

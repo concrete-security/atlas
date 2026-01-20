@@ -10,7 +10,7 @@ export interface JsAttestation {
   tcbStatus: string
   advisoryIds: Array<string>
 }
-export interface JsRatlsConnection {
+export interface JsAtlsConnection {
   socketId: number
   attestation: JsAttestation
 }
@@ -22,8 +22,8 @@ export interface JsRatlsConnection {
  * configuration with all required default fields filled in.
  */
 export declare function mergeWithDefaultAppCompose(userCompose: any): any
-/** Establish an RATLS connection and return a socket handle with attestation result. */
-export declare function ratlsConnect(targetHost: string, serverName: string, policyJson: any): Promise<JsRatlsConnection>
+/** Establish an aTLS connection and return a socket handle with attestation result. */
+export declare function atlsConnect(targetHost: string, serverName: string, policyJson: any): Promise<JsAtlsConnection>
 /** Read data from socket */
 export declare function socketRead(socketId: number, size?: number | undefined | null): Promise<Buffer>
 /** Write data to socket */

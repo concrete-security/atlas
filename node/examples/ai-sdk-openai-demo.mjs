@@ -1,5 +1,5 @@
 /**
- * RA-TLS Demo with AI SDK
+ * aTLS Demo with AI SDK
  *
  * Demonstrates streaming chat completions through an attested TLS connection
  * to a vLLM instance running in a Trusted Execution Environment.
@@ -8,26 +8,26 @@
  *   node examples/ai-sdk-openai-demo.mjs "Your prompt here"
  *
  * Environment:
- *   RATLS_TARGET    - Target host (default: vllm.concrete-security.com:443)
+ *   ATLS_TARGET    - Target host (default: vllm.concrete-security.com:443)
  *   OPENAI_API_KEY  - API key for authentication
  *   OPENAI_MODEL    - Model ID (default: openai/gpt-oss-120b)
  */
 
-import { createRatlsFetch } from "../ratls-fetch.js"
+import { createAtlsFetch } from "../atls-fetch.js"
 import { createOpenAI } from "@ai-sdk/openai"
 import { streamText } from "ai"
 
 // Configuration
-const target = process.env.RATLS_TARGET || "vllm.concrete-security.com"
+const target = process.env.ATLS_TARGET || "vllm.concrete-security.com"
 const apiKey = process.env.OPENAI_API_KEY || "dummy-key"
 const model = process.env.OPENAI_MODEL || "openai/gpt-oss-120b"
-const prompt = process.argv.slice(2).join(" ").trim() || "Say hello from Node RA-TLS!"
+const prompt = process.argv.slice(2).join(" ").trim() || "Say hello from Node aTLS!"
 
 // Track attestation for final summary
 let lastAttestation = null
 
 // Create attested fetch - one-liner with attestation callback
-const fetch = createRatlsFetch({
+const fetch = createAtlsFetch({
   target,
   onAttestation: (attestation) => {
     lastAttestation = attestation

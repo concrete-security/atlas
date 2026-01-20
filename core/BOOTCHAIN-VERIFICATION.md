@@ -52,7 +52,7 @@ This means there's no single set of "correct" measurements for a Dstack version 
 You must provide both `expected_bootchain` and `os_image_hash` when runtime verification is enabled:
 
 ```rust
-use ratls_core::{DstackTdxPolicy, ExpectedBootchain, Policy};
+use atls_core::{DstackTdxPolicy, ExpectedBootchain, Policy};
 
 let policy = Policy::DstackTdx(DstackTdxPolicy {
     expected_bootchain: Some(ExpectedBootchain {

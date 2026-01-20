@@ -4,7 +4,7 @@ export interface AttestationResult {
   tcbStatus: string;
 }
 
-export interface RatlsFetchOptions {
+export interface AtlsFetchOptions {
   proxyUrl: string;
   targetHost: string;
   serverName?: string;
@@ -12,13 +12,13 @@ export interface RatlsFetchOptions {
   onAttestation?: (attestation: AttestationResult) => void;
 }
 
-export interface RatlsResponse extends Response {
+export interface AtlsResponse extends Response {
   readonly attestation: AttestationResult;
 }
 
-export type RatlsFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<RatlsResponse>;
+export type AtlsFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<AtlsResponse>;
 
-export function createRatlsFetch(options: RatlsFetchOptions): RatlsFetch;
+export function createAtlsFetch(options: AtlsFetchOptions): AtlsFetch;
 
-export { AttestedStream } from "./ratls_wasm.js";
+export { AttestedStream } from "./atls_wasm.js";
 

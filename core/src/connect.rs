@@ -1,14 +1,14 @@
-//! High-level RA-TLS connection API.
+//! High-level aTLS connection API.
 //!
-//! This module provides the `ratls_connect` function that combines TLS handshake
-//! with remote attestation verification in a single call.
+//! This module provides the `atls_connect` function that combines TLS handshake
+//! with attestation verification in a single call.
 
 use log::debug;
 
-use crate::error::RatlsVerificationError;
+use crate::error::AtlsVerificationError;
 use crate::policy::Policy;
 use crate::verifier::{AsyncByteStream, Report};
-use crate::RatlsVerifier;
+use crate::AtlsVerifier;
 use rustls::pki_types::ServerName;
 use rustls::{ClientConfig, RootCertStore};
 use std::sync::Arc;
@@ -42,7 +42,7 @@ pub async fn tls_handshake<S>(
     stream: S,
     server_name: &str,
     alpn: Option<Vec<String>>,
-) -> Result<(TlsStream<S>, Vec<u8>), RatlsVerificationError>
+) -> Result<(TlsStream<S>, Vec<u8>), AtlsVerificationError>
 where
     S: AsyncByteStream + 'static,
 {
@@ -61,12 +61,12 @@ where
 
     let connector = TlsConnector::from(Arc::new(config));
     let server_name_parsed = ServerName::try_from(server_name.to_owned())
-        .map_err(|e| RatlsVerificationError::InvalidServerName(e.to_string()))?;
+        .map_err(|e| AtlsVerificationError::InvalidServerName(e.to_string()))?;
 
     let tls_stream = connector
         .connect(server_name_parsed, stream)
         .await
-        .map_err(|e| RatlsVerificationError::TlsHandshake(e.to_string()))?;
+        .map_err(|e| AtlsVerificationError::TlsHandshake(e.to_string()))?;
 
     // Get peer certificate from the connection
     let (_, conn) = tls_stream.get_ref();
@@ -74,7 +74,7 @@ where
         .peer_certificates()
         .and_then(|certs| certs.first())
         .map(|cert| cert.as_ref().to_vec())
-        .ok_or(RatlsVerificationError::MissingCertificate)?;
+        .ok_or(AtlsVerificationError::MissingCertificate)?;
 
     debug!(
         "TLS handshake complete, certificate received ({} bytes)",
@@ -84,7 +84,7 @@ where
     Ok((tls_stream, peer_cert))
 }
 
-/// Establish a TLS connection with remote attestation verification.
+/// Establish a TLS connection with attestation verification.
 ///
 /// This function combines TLS handshake with attestation verification:
 /// 1. Performs a TLS handshake with CA certificate verification
@@ -107,26 +107,26 @@ where
 /// # Example
 ///
 /// ```no_run
-/// use ratls_core::{ratls_connect, Policy, DstackTdxPolicy};
+/// use atls_core::{atls_connect, Policy, DstackTdxPolicy};
 ///
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 /// let tcp = tokio::net::TcpStream::connect("tee.example.com:443").await?;
 /// let policy = Policy::DstackTdx(DstackTdxPolicy::dev());
-/// let (tls_stream, report) = ratls_connect(tcp, "tee.example.com", policy, None).await?;
+/// let (tls_stream, report) = atls_connect(tcp, "tee.example.com", policy, None).await?;
 /// match &report {
-///     ratls_core::Report::Tdx(tdx_report) => {
+///     atls_core::Report::Tdx(tdx_report) => {
 ///         println!("TCB Status: {}", tdx_report.status);
 ///     }
 /// }
 /// # Ok(())
 /// # }
 /// ```
-pub async fn ratls_connect<S>(
+pub async fn atls_connect<S>(
     stream: S,
     server_name: &str,
     policy: Policy,
     alpn: Option<Vec<String>>,
-) -> Result<(TlsStream<S>, Report), RatlsVerificationError>
+) -> Result<(TlsStream<S>, Report), AtlsVerificationError>
 where
     S: AsyncByteStream + 'static,
 {

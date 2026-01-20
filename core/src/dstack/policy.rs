@@ -3,7 +3,7 @@
 use crate::dstack::{DstackTDXVerifier, DstackTDXVerifierBuilder};
 use crate::tdx::{ExpectedBootchain, TCB_STATUS_LIST};
 use crate::verifier::IntoVerifier;
-use crate::RatlsVerificationError;
+use crate::AtlsVerificationError;
 use serde::{Deserialize, Serialize};
 
 /// Default PCCS URL for TDX collateral fetching.
@@ -96,11 +96,11 @@ impl DstackTdxPolicy {
     /// - `allowed_tcb_status` values are valid TCB status strings
     /// - `os_image_hash` is a valid hex string (if provided)
     /// - `expected_bootchain` fields are valid hex strings (if provided)
-    pub fn validate(&self) -> Result<(), RatlsVerificationError> {
+    pub fn validate(&self) -> Result<(), AtlsVerificationError> {
         // Validate TCB status values
         for status in &self.allowed_tcb_status {
             if !TCB_STATUS_LIST.contains(&status.as_str()) {
-                return Err(RatlsVerificationError::Configuration(format!(
+                return Err(AtlsVerificationError::Configuration(format!(
                     "invalid TCB status '{}', valid values are: {:?}",
                     status, TCB_STATUS_LIST
                 )));
@@ -110,7 +110,7 @@ impl DstackTdxPolicy {
         // Validate os_image_hash is hex
         if let Some(ref hash) = self.os_image_hash {
             if !is_valid_hex(hash) {
-                return Err(RatlsVerificationError::Configuration(
+                return Err(AtlsVerificationError::Configuration(
                     "os_image_hash must be a lowercase hex string".into(),
                 ));
             }
@@ -119,22 +119,22 @@ impl DstackTdxPolicy {
         // Validate bootchain fields are hex
         if let Some(ref bootchain) = self.expected_bootchain {
             if !is_valid_hex(&bootchain.mrtd) {
-                return Err(RatlsVerificationError::Configuration(
+                return Err(AtlsVerificationError::Configuration(
                     "expected_bootchain.mrtd must be a lowercase hex string".into(),
                 ));
             }
             if !is_valid_hex(&bootchain.rtmr0) {
-                return Err(RatlsVerificationError::Configuration(
+                return Err(AtlsVerificationError::Configuration(
                     "expected_bootchain.rtmr0 must be a lowercase hex string".into(),
                 ));
             }
             if !is_valid_hex(&bootchain.rtmr1) {
-                return Err(RatlsVerificationError::Configuration(
+                return Err(AtlsVerificationError::Configuration(
                     "expected_bootchain.rtmr1 must be a lowercase hex string".into(),
                 ));
             }
             if !is_valid_hex(&bootchain.rtmr2) {
-                return Err(RatlsVerificationError::Configuration(
+                return Err(AtlsVerificationError::Configuration(
                     "expected_bootchain.rtmr2 must be a lowercase hex string".into(),
                 ));
             }
@@ -147,7 +147,7 @@ impl DstackTdxPolicy {
 impl IntoVerifier for DstackTdxPolicy {
     type Verifier = DstackTDXVerifier;
 
-    fn into_verifier(self) -> Result<DstackTDXVerifier, RatlsVerificationError> {
+    fn into_verifier(self) -> Result<DstackTDXVerifier, AtlsVerificationError> {
         // Validate configuration before building
         self.validate()?;
 

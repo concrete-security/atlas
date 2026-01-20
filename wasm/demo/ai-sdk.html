@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>RA-TLS + AI SDK Demo</title>
+  <title>aTLS + AI SDK Demo</title>
   <style>
     * { box-sizing: border-box; }
     body {
@@ -143,7 +143,7 @@
 </head>
 <body>
   <div class="container">
-    <h1>🔐 RA-TLS + AI SDK Demo</h1>
+    <h1>🔐 aTLS + AI SDK Demo</h1>
     <p class="subtitle">Using Vercel AI SDK with attested TLS connections to TEE-hosted LLMs</p>
 
     <div class="card">
@@ -189,7 +189,7 @@
   <script type="module">
     import { createOpenAI } from "@ai-sdk/openai";
     import { generateText, streamText } from "ai";
-    import { init, createRatlsFetch, mergeWithDefaultAppCompose } from "../pkg/ratls-fetch.js";
+    import { init, createAtlsFetch, mergeWithDefaultAppCompose } from "../pkg/atls-fetch.js";
 
     const output = document.getElementById("output");
     const sendBtn = document.getElementById("sendBtn");
@@ -354,9 +354,9 @@ volumes:
           allowed_tcb_status: ["UpToDate", "SWHardeningNeeded"]
         };
 
-        log(`Creating RA-TLS fetch for ${targetHost} with full verification...`, "info");
+        log(`Creating aTLS fetch for ${targetHost} with full verification...`, "info");
 
-        const ratlsFetch = createRatlsFetch({
+        const atlsFetch = createAtlsFetch({
           proxyUrl,
           targetHost,
           policy: VLLM_POLICY,
@@ -370,12 +370,12 @@ volumes:
           }
         });
 
-        log("Creating OpenAI provider with RA-TLS fetch...", "info");
+        log("Creating OpenAI provider with aTLS fetch...", "info");
 
         const openai = createOpenAI({
           baseURL: `https://${targetHost}/v1`,
           apiKey: "not-needed",
-          fetch: ratlsFetch
+          fetch: atlsFetch
         });
 
         sendBtn.innerHTML = '<span class="spinner"></span>Streaming...';

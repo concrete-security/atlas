@@ -2,8 +2,8 @@ use bytes::{Bytes, BytesMut};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use once_cell::sync::Lazy;
-use ratls_core::{
-    dstack::merge_with_default_app_compose, ratls_connect as core_ratls_connect, Policy, Report,
+use atls_core::{
+    dstack::merge_with_default_app_compose, atls_connect as core_atls_connect, Policy, Report,
     TlsStream as CoreTlsStream,
 };
 use rustls::crypto::aws_lc_rs::default_provider;
@@ -47,7 +47,7 @@ impl From<Report> for JsAttestation {
 }
 
 #[napi(object)]
-pub struct JsRatlsConnection {
+pub struct JsAtlsConnection {
     #[napi(js_name = "socketId")]
     pub socket_id: u32,
     pub attestation: JsAttestation,
@@ -73,13 +73,13 @@ pub fn merge_with_default_app_compose_js(user_compose: Value) -> Value {
     merge_with_default_app_compose(&user_compose)
 }
 
-/// Establish an RATLS connection and return a socket handle with attestation result.
-#[napi(js_name = "ratlsConnect")]
-pub async fn ratls_connect(
+/// Establish an aTLS connection and return a socket handle with attestation result.
+#[napi(js_name = "atlsConnect")]
+pub async fn atls_connect(
     target_host: String,
     server_name: String,
     policy_json: Value,
-) -> napi::Result<JsRatlsConnection> {
+) -> napi::Result<JsAtlsConnection> {
     // Ensure crypto provider is initialized
     Lazy::force(&CRYPTO_INIT);
 
@@ -97,14 +97,14 @@ pub async fn ratls_connect(
         .await
         .map_err(|err| Error::from_reason(format!("tcp connect failed: {err}")))?;
 
-    let (tls, report) = core_ratls_connect(
+    let (tls, report) = core_atls_connect(
         tcp,
         &server_name,
         policy,
         Some(vec!["http/1.1".into()]),
     )
     .await
-    .map_err(|err| Error::from_reason(format!("ratls handshake failed: {err}")))?;
+    .map_err(|err| Error::from_reason(format!("atls handshake failed: {err}")))?;
 
     let socket_id = NEXT_SOCKET_ID.fetch_add(1, Ordering::SeqCst);
     let (reader, writer) = tokio::io::split(tls);
@@ -116,7 +116,7 @@ pub async fn ratls_connect(
         },
     );
 
-    Ok(JsRatlsConnection {
+    Ok(JsAtlsConnection {
         socket_id,
         attestation: report.into(),
     })

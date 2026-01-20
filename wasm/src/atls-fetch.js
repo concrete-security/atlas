@@ -1,12 +1,12 @@
 /**
- * RA-TLS Fetch - A fetch-compatible API for attested TLS connections.
+ * aTLS Fetch - A fetch-compatible API for attested TLS connections.
  *
  * This module provides a fetch-like API that delegates HTTP handling to the
  * WASM module (including chunked transfer encoding for streaming LLM responses).
  *
  * @example Production usage with full verification
  * ```js
- * import { init, createRatlsFetch, mergeWithDefaultAppCompose } from "ratls-fetch.js"
+ * import { init, createAtlsFetch, mergeWithDefaultAppCompose } from "atls-fetch.js"
  *
  * await init()
  *
@@ -26,7 +26,7 @@
  *   allowed_tcb_status: ["UpToDate", "SWHardeningNeeded"]
  * }
  *
- * const fetch = createRatlsFetch({
+ * const fetch = createAtlsFetch({
  *   proxyUrl: "ws://localhost:9000",
  *   targetHost: "enclave.example.com",
  *   policy
@@ -46,7 +46,7 @@
  * ```
  */
 
-import init, { AttestedStream, RatlsHttp, mergeWithDefaultAppCompose } from "./ratls_wasm.js";
+import init, { AttestedStream, AtlsHttp, mergeWithDefaultAppCompose } from "./atls_wasm.js";
 
 // ============================================================================
 // WASM Initialization
@@ -67,8 +67,8 @@ async function ensureWasm() {
 
 /**
  * Connection cache keyed by (wsUrl, serverName).
- * Each entry holds an RatlsHttp instance that can be reused.
- * @type {Map<string, RatlsHttp>}
+ * Each entry holds an AtlsHttp instance that can be reused.
+ * @type {Map<string, AtlsHttp>}
  */
 const connectionCache = new Map();
 
@@ -111,7 +111,7 @@ function normalizeProxyUrl(raw) {
     const url = new URL(candidate);
     const isProd = typeof process !== "undefined" && process?.env?.NODE_ENV === "production";
     if (isProd && url.protocol !== "wss:" && !isLoopbackHostname(url.hostname)) {
-      throw new Error("RA-TLS proxy URL must use wss:// in production");
+      throw new Error("aTLS proxy URL must use wss:// in production");
     }
     return url.toString();
   } catch (error) {
@@ -155,15 +155,15 @@ function buildProxyUrl(base, target) {
  * @param {Function} [options.onAttestation] - Callback when attestation is received (only on new connections)
  * @returns {Function} A fetch-compatible async function
  */
-export function createRatlsFetch(options) {
+export function createAtlsFetch(options) {
   const { proxyUrl, targetHost, serverName, defaultHeaders, onAttestation, policy } = options;
 
   if (!proxyUrl || !targetHost) {
-    throw new Error("proxyUrl and targetHost are required for RA-TLS fetch");
+    throw new Error("proxyUrl and targetHost are required for aTLS fetch");
   }
 
   if (!policy) {
-    throw new Error("policy is required for RATLS verification. See docs for policy format.");
+    throw new Error("policy is required for aTLS verification. See docs for policy format.");
   }
 
   const normalizedTarget = normalizeTarget(targetHost);
@@ -177,7 +177,7 @@ export function createRatlsFetch(options) {
   // Cache key for this connection target
   const cacheKey = `${wsUrl}|${sni}`;
 
-  return async function ratlsFetch(input, init = {}) {
+  return async function atlsFetch(input, init = {}) {
     await ensureWasm();
 
     // Try to reuse an existing connection
@@ -199,8 +199,8 @@ export function createRatlsFetch(options) {
         connectionCache.delete(cacheKey);
       }
 
-      // Connect and perform RA-TLS handshake with policy
-      http = await RatlsHttp.connect(wsUrl, sni, policy);
+      // Connect and perform aTLS handshake with policy
+      http = await AtlsHttp.connect(wsUrl, sni, policy);
       connectionCache.set(cacheKey, http);
 
       // Get attestation
@@ -211,7 +211,7 @@ export function createRatlsFetch(options) {
         try {
           await onAttestation(attestation);
         } catch (e) {
-          console.error("[ratls-fetch] onAttestation callback failed:", e);
+          console.error("[atls-fetch] onAttestation callback failed:", e);
           // Clean up the connection on attestation callback failure
           connectionCache.delete(cacheKey);
           try { http.close(); } catch (_) {}
@@ -291,4 +291,4 @@ export function createRatlsFetch(options) {
 }
 
 // Re-export for advanced usage
-export { init, AttestedStream, RatlsHttp, mergeWithDefaultAppCompose };
+export { init, AttestedStream, AtlsHttp, mergeWithDefaultAppCompose };

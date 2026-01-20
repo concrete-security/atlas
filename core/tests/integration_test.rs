@@ -2,8 +2,8 @@
 //!
 //! These tests verify real TDX attestation against a live dstack deployment.
 
-use ratls_core::{
-    DstackTDXVerifierBuilder, ExpectedBootchain, RatlsVerificationError, dstack::{compose_hash::get_compose_hash, get_default_app_compose}
+use atls_core::{
+    DstackTDXVerifierBuilder, ExpectedBootchain, AtlsVerificationError, dstack::{compose_hash::get_compose_hash, get_default_app_compose}
 };
 use serde_json::json;
 
@@ -53,7 +53,7 @@ fn test_builder_requires_bootchain_and_os_image_hash() {
 
     assert!(matches!(
         result,
-        Err(RatlsVerificationError::Configuration(_))
+        Err(AtlsVerificationError::Configuration(_))
     ));
 }
 
@@ -68,7 +68,7 @@ fn test_builder_requires_app_compose() {
 
     assert!(matches!(
         result,
-        Err(RatlsVerificationError::Configuration(_))
+        Err(AtlsVerificationError::Configuration(_))
     ));
 }
 
@@ -118,7 +118,7 @@ fn test_expected_bootchain_values() {
 
 mod integration {
     use super::*;
-    use ratls_core::RatlsVerifier;
+    use atls_core::AtlsVerifier;
     use rustls::pki_types::ServerName;
     use rustls::crypto::ring::default_provider;
     use std::sync::Arc;
@@ -190,7 +190,7 @@ mod integration {
         );
         let report = result.unwrap();
         match &report {
-            ratls_core::Report::Tdx(tdx_report) => {
+            atls_core::Report::Tdx(tdx_report) => {
                 println!("Verification passed! TCB Status: {}", tdx_report.status);
             }
         }
@@ -228,7 +228,7 @@ mod integration {
         match &result {
             Ok(report) => {
                 match report {
-                    ratls_core::Report::Tdx(tdx_report) => {
+                    atls_core::Report::Tdx(tdx_report) => {
                         println!("Full verification passed! TCB Status: {}", tdx_report.status);
                     }
                 }
@@ -268,7 +268,7 @@ mod integration {
         let result = verifier.verify(&mut stream, &peer_cert, TEST_HOST).await;
 
         assert!(
-            matches!(result, Err(RatlsVerificationError::BootchainMismatch { .. })),
+            matches!(result, Err(AtlsVerificationError::BootchainMismatch { .. })),
             "Expected BootchainMismatch error, got: {:?}",
             result
         );
@@ -307,8 +307,8 @@ mod integration {
         assert!(
             matches!(
                 result,
-                Err(RatlsVerificationError::OsImageHashMismatch { .. })
-                    | Err(RatlsVerificationError::AppComposeHashMismatch { .. })
+                Err(AtlsVerificationError::OsImageHashMismatch { .. })
+                    | Err(AtlsVerificationError::AppComposeHashMismatch { .. })
             ),
             "Expected verification error, got: {:?}",
             result
@@ -404,9 +404,9 @@ mod integration {
         println!("Sync wrapper verification passed!");
     }
 
-    /// Test the high-level ratls_connect API with full verification policy.
+    /// Test the high-level atls_connect API with full verification policy.
     #[tokio::test]
-    async fn test_ratls_connect_full_verification() {
+    async fn test_atls_connect_full_verification() {
         let tcp = tokio::net::TcpStream::connect(format!("{}:443", TEST_HOST))
             .await
             .expect("Failed to connect TCP");
@@ -414,7 +414,7 @@ mod integration {
         let mut app_compose = get_default_app_compose();
         app_compose["docker_compose_file"] = json!(get_vllm_docker_compose());
 
-        let policy = ratls_core::Policy::DstackTdx(ratls_core::DstackTdxPolicy {
+        let policy = atls_core::Policy::DstackTdx(atls_core::DstackTdxPolicy {
             expected_bootchain: Some(test_bootchain()),
             app_compose: Some(app_compose),
             os_image_hash: Some(TEST_OS_IMAGE_HASH.to_string()),
@@ -424,19 +424,19 @@ mod integration {
             ],
             ..Default::default()
         });
-        let result = ratls_core::ratls_connect(tcp, TEST_HOST, policy, None).await;
+        let result = atls_core::atls_connect(tcp, TEST_HOST, policy, None).await;
 
         // This might fail if app_compose doesn't match - that's expected
         // The important thing is that the verifier runs the full verification
         match &result {
             Ok((_, report)) => {
                 match report {
-                    ratls_core::Report::Tdx(tdx_report) => {
-                        println!("ratls_connect full verification passed! TCB Status: {}", tdx_report.status);
+                    atls_core::Report::Tdx(tdx_report) => {
+                        println!("atls_connect full verification passed! TCB Status: {}", tdx_report.status);
                     }
                 }
             }
-            Err(ratls_core::RatlsVerificationError::AppComposeHashMismatch { expected, actual }) => {
+            Err(atls_core::AtlsVerificationError::AppComposeHashMismatch { expected, actual }) => {
                 println!(
                     "App compose hash mismatch (expected if it is out of date):\n  Expected: {}\n  Actual: {}",
                     expected, actual
@@ -449,9 +449,9 @@ mod integration {
         }
     }
 
-    /// Test ratls_connect with ALPN protocols and full verification.
+    /// Test atls_connect with ALPN protocols and full verification.
     #[tokio::test]
-    async fn test_ratls_connect_with_alpn() {
+    async fn test_atls_connect_with_alpn() {
         let tcp = tokio::net::TcpStream::connect(format!("{}:443", TEST_HOST))
             .await
             .expect("Failed to connect TCP");
@@ -459,7 +459,7 @@ mod integration {
         let mut app_compose = get_default_app_compose();
         app_compose["docker_compose_file"] = json!(get_vllm_docker_compose());
 
-        let policy = ratls_core::Policy::DstackTdx(ratls_core::DstackTdxPolicy {
+        let policy = atls_core::Policy::DstackTdx(atls_core::DstackTdxPolicy {
             expected_bootchain: Some(test_bootchain()),
             app_compose: Some(app_compose),
             os_image_hash: Some(TEST_OS_IMAGE_HASH.to_string()),
@@ -469,7 +469,7 @@ mod integration {
             ],
             ..Default::default()
         });
-        let result = ratls_core::ratls_connect(
+        let result = atls_core::atls_connect(
             tcp,
             TEST_HOST,
             policy,
@@ -480,12 +480,12 @@ mod integration {
         match &result {
             Ok((_, report)) => {
                 match report {
-                    ratls_core::Report::Tdx(tdx_report) => {
-                        println!("ratls_connect with ALPN passed! TCB Status: {}", tdx_report.status);
+                    atls_core::Report::Tdx(tdx_report) => {
+                        println!("atls_connect with ALPN passed! TCB Status: {}", tdx_report.status);
                     }
                 }
             }
-            Err(ratls_core::RatlsVerificationError::AppComposeHashMismatch { expected, actual }) => {
+            Err(atls_core::AtlsVerificationError::AppComposeHashMismatch { expected, actual }) => {
                 println!(
                     "App compose hash mismatch (expected if it is out of date):\n  Expected: {}\n  Actual: {}",
                     expected, actual
@@ -504,7 +504,7 @@ mod integration {
             .await
             .expect("Failed to connect TCP");
 
-        let result = ratls_core::connect::tls_handshake(tcp, TEST_HOST, None).await;
+        let result = atls_core::connect::tls_handshake(tcp, TEST_HOST, None).await;
 
         assert!(
             result.is_ok(),

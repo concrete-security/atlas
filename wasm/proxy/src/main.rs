@@ -1,4 +1,4 @@
-//! Minimal WebSocket -> TCP forwarder for ratls tunnel testing.
+//! Minimal WebSocket -> TCP forwarder for aTLS tunnel testing.
 //! Accepts binary WebSocket connections and pipes bytes to a configured TCP target.
 
 use futures_util::{SinkExt, StreamExt};
@@ -85,14 +85,14 @@ async fn handle_ws(
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let listen_addr =
-        std::env::var("RATLS_PROXY_LISTEN").unwrap_or_else(|_| "127.0.0.1:9000".to_string());
+        std::env::var("ATLS_PROXY_LISTEN").unwrap_or_else(|_| "127.0.0.1:9000".to_string());
     let target =
-        std::env::var("RATLS_PROXY_TARGET").unwrap_or_else(|_| "127.0.0.1:8443".to_string());
+        std::env::var("ATLS_PROXY_TARGET").unwrap_or_else(|_| "127.0.0.1:8443".to_string());
 
-    let allowlist = Arc::new(parse_allowlist("RATLS_PROXY_ALLOWLIST"));
+    let allowlist = Arc::new(parse_allowlist("ATLS_PROXY_ALLOWLIST"));
     if allowlist.is_empty() {
         eprintln!(
-            "WARNING: RATLS_PROXY_ALLOWLIST is empty or not set. All targets will be rejected."
+            "WARNING: ATLS_PROXY_ALLOWLIST is empty or not set. All targets will be rejected."
         );
     } else {
         eprintln!(
@@ -107,7 +107,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     let listener = TcpListener::bind(&listen_addr).await?;
-    eprintln!("ratls-proxy listening on {listen_addr}, default target {target}");
+    eprintln!("atls-proxy listening on {listen_addr}, default target {target}");
 
     loop {
         let (stream, peer) = listener.accept().await?;

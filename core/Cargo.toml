@@ -1,12 +1,12 @@
 [package]
-name = "ratls-core"
+name = "atls-core"
 version = "0.1.0"
 edition = "2021"
-description = "Remote Attestation TLS (RA-TLS) core library for verifying TEE attestations over TLS connections"
+description = "attested TLS (aTLS) core library for verifying TEE attestations over TLS connections"
 license = "MIT"
 repository = "https://github.com/concrete-security/ratls"
 readme = "README.md"
-keywords = ["tls", "attestation", "tee", "tdx", "confidential-computing", "ratls"]
+keywords = ["tls", "attestation", "tee", "tdx", "confidential-computing", "atls"]
 categories = ["cryptography", "network-programming", "security"]
 
 [features]

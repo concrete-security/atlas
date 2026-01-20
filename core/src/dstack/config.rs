@@ -69,8 +69,8 @@ impl Default for DstackTDXVerifierConfig {
 /// # Example
 ///
 /// ```
-/// use ratls_core::dstack::{DstackTDXVerifierBuilder};
-/// use ratls_core::tdx::ExpectedBootchain;
+/// use atls_core::dstack::{DstackTDXVerifierBuilder};
+/// use atls_core::tdx::ExpectedBootchain;
 /// use serde_json::json;
 ///
 /// let verifier = DstackTDXVerifierBuilder::new()
@@ -154,7 +154,7 @@ impl DstackTDXVerifierBuilder {
     }
 
     /// Build the DstackTDXVerifier with the configured settings.
-    pub fn build(self) -> Result<super::DstackTDXVerifier, crate::RatlsVerificationError> {
+    pub fn build(self) -> Result<super::DstackTDXVerifier, crate::AtlsVerificationError> {
         super::DstackTDXVerifier::new(self.config)
     }
 }

@@ -1,18 +1,18 @@
-# RATLS Core Architecture
+# aTLS Core Architecture
 
-This document describes the architecture of the `ratls-core` crate, designed for contributors who want to understand the design or extend it with new TEE verifiers.
+This document describes the architecture of the `atls-core` crate, designed for contributors who want to understand the design or extend it with new TEE verifiers.
 
 ## Overview
 
-RATLS (Remote Attestation TLS) enables clients to verify that a TLS server is running inside a Trusted Execution Environment (TEE). The core crate provides:
+aTLS (attested TLS) enables clients to verify that a TLS server is running inside a Trusted Execution Environment (TEE). The core crate provides:
 
-- **High-level API**: One-shot `ratls_connect()` for easy integration
-- **Low-level API**: `RatlsVerifier` trait for custom TLS handling
+- **High-level API**: One-shot `atls_connect()` for easy integration
+- **Low-level API**: `AtlsVerifier` trait for custom TLS handling
 - **Extensible design**: Add new TEE types by implementing traits and adding enum variants
 
 ## Design Philosophy
 
-1. **Trait-based abstractions** - `RatlsVerifier` and `IntoVerifier` traits enable extensibility without modifying core logic
+1. **Trait-based abstractions** - `AtlsVerifier` and `IntoVerifier` traits enable extensibility without modifying core logic
 2. **Enum-based polymorphism** - `Policy`, `Verifier`, and `Report` enums provide type-safe runtime dispatch
 3. **Policy-driven configuration** - JSON-serializable policies make configuration flexible and portable
 4. **Platform abstraction** - Conditional compilation supports both native (tokio) and WASM (futures) targets
@@ -22,7 +22,7 @@ RATLS (Remote Attestation TLS) enables clients to verify that a TLS server is ru
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                       High-Level API                            │
-│    ratls_connect(stream, server_name, policy, alpn)            │
+│    atls_connect(stream, server_name, policy, alpn)            │
 │                                                                 │
 │    1. TLS handshake with CA verification                       │
 │    2. Capture peer certificate                                  │
@@ -50,7 +50,7 @@ RATLS (Remote Attestation TLS) enables clients to verify that a TLS server is ru
 │  │ (+ future verifiers)│                                       │
 │  └─────────────────────┘                                       │
 │                                                                 │
-│  Implements RatlsVerifier trait                                 │
+│  Implements AtlsVerifier trait                                 │
 │  Performs TEE-specific attestation verification                 │
 └─────────────────────────────────────────────────────────────────┘
                                │
@@ -68,18 +68,18 @@ RATLS (Remote Attestation TLS) enables clients to verify that a TLS server is ru
 
 ## Core Abstractions
 
-### RatlsVerifier Trait
+### AtlsVerifier Trait
 
 The core interface for attestation verification:
 
 ```rust
-pub trait RatlsVerifier: Send + Sync {
+pub trait AtlsVerifier: Send + Sync {
     fn verify<S>(
         &self,
         stream: &mut S,       // TLS stream for quote fetching
         peer_cert: &[u8],     // Server's TLS certificate (DER)
         hostname: &str,       // Server hostname
-    ) -> impl Future<Output = Result<Report, RatlsVerificationError>> + Send
+    ) -> impl Future<Output = Result<Report, AtlsVerificationError>> + Send
     where
         S: AsyncByteStream;
 }
@@ -91,8 +91,8 @@ Converts configuration/policy types into concrete verifiers:
 
 ```rust
 pub trait IntoVerifier {
-    type Verifier: RatlsVerifier;
-    fn into_verifier(self) -> Result<Self::Verifier, RatlsVerificationError>;
+    type Verifier: AtlsVerifier;
+    fn into_verifier(self) -> Result<Self::Verifier, AtlsVerificationError>;
 }
 ```
 
@@ -134,7 +134,7 @@ pub enum Report {
 
 ## Verification Flow
 
-When `ratls_connect()` is called:
+When `atls_connect()` is called:
 
 1. **TLS Handshake** - Establish TLS connection using webpki-roots CA bundle
 2. **Certificate Capture** - Extract server's leaf certificate (DER-encoded)
@@ -151,14 +151,14 @@ When `ratls_connect()` is called:
 ```
 core/src/
 ├── lib.rs              # Public API re-exports
-├── connect.rs          # ratls_connect(), tls_handshake()
-├── verifier.rs         # RatlsVerifier trait, Report/Verifier enums
+├── connect.rs          # atls_connect(), tls_handshake()
+├── verifier.rs         # AtlsVerifier trait, Report/Verifier enums
 ├── policy.rs           # Policy enum
-├── error.rs            # RatlsVerificationError
+├── error.rs            # AtlsVerificationError
 │
 ├── dstack/             # DStack TDX implementation
 │   ├── mod.rs          # Re-exports
-│   ├── verifier.rs     # DstackTDXVerifier (RatlsVerifier impl)
+│   ├── verifier.rs     # DstackTDXVerifier (AtlsVerifier impl)
 │   ├── config.rs       # DstackTDXVerifierConfig, Builder
 │   ├── policy.rs       # DstackTdxPolicy (IntoVerifier impl)
 │   └── compose_hash.rs # Deterministic app config hashing
@@ -168,7 +168,7 @@ core/src/
     └── config.rs       # ExpectedBootchain, TCB_STATUS_LIST
 ```
 
-## Extending RATLS: Adding a New TEE Verifier
+## Extending aTLS: Adding a New TEE Verifier
 
 Follow these steps to add support for a new TEE (e.g., SGX, SEV-SNP).
 
@@ -203,13 +203,13 @@ impl Report {
 }
 ```
 
-### Step 3: Implement RatlsVerifier
+### Step 3: Implement AtlsVerifier
 
 Create your verifier in `my_tee/verifier.rs`:
 
 ```rust
-use crate::error::RatlsVerificationError;
-use crate::verifier::{AsyncByteStream, RatlsVerifier, Report};
+use crate::error::AtlsVerificationError;
+use crate::verifier::{AsyncByteStream, AtlsVerifier, Report};
 
 pub struct MyTeeVerifier {
     config: MyTeeVerifierConfig,
@@ -217,13 +217,13 @@ pub struct MyTeeVerifier {
 
 // Native implementation (tokio)
 #[cfg(not(target_arch = "wasm32"))]
-impl RatlsVerifier for MyTeeVerifier {
+impl AtlsVerifier for MyTeeVerifier {
     async fn verify<S>(
         &self,
         stream: &mut S,
         peer_cert: &[u8],
         hostname: &str,
-    ) -> Result<Report, RatlsVerificationError>
+    ) -> Result<Report, AtlsVerificationError>
     where
         S: AsyncByteStream,
     {
@@ -245,13 +245,13 @@ impl RatlsVerifier for MyTeeVerifier {
 
 // WASM implementation (futures) - same logic, different trait bounds
 #[cfg(target_arch = "wasm32")]
-impl RatlsVerifier for MyTeeVerifier {
+impl AtlsVerifier for MyTeeVerifier {
     async fn verify<S>(
         &self,
         stream: &mut S,
         peer_cert: &[u8],
         hostname: &str,
-    ) -> Result<Report, RatlsVerificationError>
+    ) -> Result<Report, AtlsVerificationError>
     where
         S: AsyncByteStream,
     {
@@ -265,7 +265,7 @@ impl RatlsVerifier for MyTeeVerifier {
 In `my_tee/config.rs`:
 
 ```rust
-use crate::error::RatlsVerificationError;
+use crate::error::AtlsVerificationError;
 
 #[derive(Debug, Clone)]
 pub struct MyTeeVerifierConfig {
@@ -290,7 +290,7 @@ impl MyTeeVerifierBuilder {
         self
     }
 
-    pub fn build(self) -> Result<MyTeeVerifier, RatlsVerificationError> {
+    pub fn build(self) -> Result<MyTeeVerifier, AtlsVerificationError> {
         // Validate config
         MyTeeVerifier::new(self.config)
     }
@@ -303,7 +303,7 @@ In `my_tee/policy.rs`:
 
 ```rust
 use serde::{Deserialize, Serialize};
-use crate::error::RatlsVerificationError;
+use crate::error::AtlsVerificationError;
 use crate::verifier::IntoVerifier;
 use super::{MyTeeVerifier, MyTeeVerifierConfig};
 
@@ -321,7 +321,7 @@ fn default_allowed_status() -> Vec<String> {
 impl IntoVerifier for MyTeePolicy {
     type Verifier = MyTeeVerifier;
 
-    fn into_verifier(self) -> Result<Self::Verifier, RatlsVerificationError> {
+    fn into_verifier(self) -> Result<Self::Verifier, AtlsVerificationError> {
         let config = MyTeeVerifierConfig {
             expected_measurement: self.expected_measurement,
             allowed_status: self.allowed_status,
@@ -346,7 +346,7 @@ pub enum Policy {
 }
 
 impl Policy {
-    pub fn into_verifier(self) -> Result<Verifier, RatlsVerificationError> {
+    pub fn into_verifier(self) -> Result<Verifier, AtlsVerificationError> {
         match self {
             Policy::DstackTdx(p) => Ok(Verifier::DstackTdx(p.into_verifier()?)),
             Policy::MyTee(p) => Ok(Verifier::MyTee(p.into_verifier()?)),  // Add arm
@@ -363,8 +363,8 @@ pub enum Verifier {
     MyTee(MyTeeVerifier),  // Add variant
 }
 
-impl RatlsVerifier for Verifier {
-    async fn verify<S>(...) -> Result<Report, RatlsVerificationError>
+impl AtlsVerifier for Verifier {
+    async fn verify<S>(...) -> Result<Report, AtlsVerificationError>
     where S: AsyncByteStream {
         match self {
             Verifier::DstackTdx(v) => v.verify(stream, peer_cert, hostname).await,
@@ -401,13 +401,13 @@ The crate supports both native (Linux/macOS/Windows) and WASM targets.
 ```rust
 // Trait definition with platform-specific bounds
 #[cfg(not(target_arch = "wasm32"))]
-pub trait RatlsVerifier: Send + Sync {
+pub trait AtlsVerifier: Send + Sync {
     fn verify<S>(...) -> impl Future<...> + Send
     where S: AsyncByteStream;
 }
 
 #[cfg(target_arch = "wasm32")]
-pub trait RatlsVerifier: Sync {
+pub trait AtlsVerifier: Sync {
     fn verify<S>(...) -> impl Future<...>  // No Send bound
     where S: AsyncByteStream;
 }
@@ -420,4 +420,4 @@ pub trait AsyncByteStream: AsyncRead + AsyncWrite + Unpin + Send {}
 pub trait AsyncByteStream: AsyncRead + AsyncWrite + Unpin {}  // No Send
 ```
 
-When implementing a new verifier, provide both `#[cfg(not(target_arch = "wasm32"))]` and `#[cfg(target_arch = "wasm32")]` implementations of `RatlsVerifier`. The logic is typically identical; only the trait bounds differ.
+When implementing a new verifier, provide both `#[cfg(not(target_arch = "wasm32"))]` and `#[cfg(target_arch = "wasm32")]` implementations of `AtlsVerifier`. The logic is typically identical; only the trait bounds differ.

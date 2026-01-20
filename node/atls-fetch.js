@@ -1,9 +1,9 @@
 /**
- * RA-TLS Fetch - Attested fetch for Trusted Execution Environments
+ * aTLS Fetch - Attested fetch for Trusted Execution Environments
  *
  * @example Production usage with full verification
  * ```js
- * import { createRatlsFetch, mergeWithDefaultAppCompose } from "ratls-node"
+ * import { createAtlsFetch, mergeWithDefaultAppCompose } from "atls-node"
  *
  * const policy = {
  *   type: "dstack_tdx",
@@ -21,14 +21,14 @@
  *   allowed_tcb_status: ["UpToDate", "SWHardeningNeeded"]
  * }
  *
- * const fetch = createRatlsFetch({ target: "enclave.example.com", policy })
+ * const fetch = createAtlsFetch({ target: "enclave.example.com", policy })
  * const response = await fetch("/api/data")
  * console.log(response.attestation.teeType) // "tdx"
  * ```
  *
  * @example Development only (NOT for production)
  * ```js
- * import { createRatlsFetch } from "ratls-node"
+ * import { createAtlsFetch } from "atls-node"
  *
  * // WARNING: disable_runtime_verification skips bootchain/app_compose/os_image checks
  * // Use ONLY for development/testing, NEVER in production
@@ -38,15 +38,15 @@
  *   allowed_tcb_status: ["UpToDate", "SWHardeningNeeded", "OutOfDate"]
  * }
  *
- * const fetch = createRatlsFetch({ target: "enclave.example.com", policy: devPolicy })
+ * const fetch = createAtlsFetch({ target: "enclave.example.com", policy: devPolicy })
  * ```
  *
  * @example With AI SDK
  * ```js
- * import { createRatlsFetch } from "ratls-node"
+ * import { createAtlsFetch } from "atls-node"
  * import { createOpenAI } from "@ai-sdk/openai"
  *
- * const fetch = createRatlsFetch({
+ * const fetch = createAtlsFetch({
  *   target: "enclave.example.com",
  *   policy: productionPolicy,
  *   onAttestation: (att) => console.log("TEE:", att.teeType)
@@ -59,16 +59,16 @@ import { Agent, request as httpsRequest } from "https"
 import { Duplex, Readable } from "stream"
 import { createRequire } from "module"
 
-const DEBUG = !!process.env.RATLS_DEBUG
+const DEBUG = !!process.env.ATLS_DEBUG
 const debug = (...args) => {
   if (DEBUG) {
-    console.error("[ratls]", ...args)
+    console.error("[atls]", ...args)
   }
 }
 
 const require = createRequire(import.meta.url)
 const {
-  ratlsConnect,
+  atlsConnect,
   socketRead,
   socketWrite,
   socketClose,
@@ -96,12 +96,12 @@ function parseTarget(target) {
 }
 
 /**
- * Create a Duplex stream backed by a Rust RATLS socket
+ * Create a Duplex stream backed by a Rust aTLS socket
  * @param {number} socketId - Socket handle from Rust
  * @param {object} attestation - Attestation result
- * @returns {Duplex & { ratlsAttestation: object }}
+ * @returns {Duplex & { atlsAttestation: object }}
  */
-function createRatlsDuplex(socketId, attestation, meta) {
+function createAtlsDuplex(socketId, attestation, meta) {
   let reading = false
   let destroyed = false
 
@@ -191,7 +191,7 @@ function createRatlsDuplex(socketId, attestation, meta) {
   })
 
   // Attach attestation as property
-  duplex.ratlsAttestation = attestation
+  duplex.atlsAttestation = attestation
 
   // Mark as TLS-connected socket (required for https.Agent)
   duplex.encrypted = true
@@ -205,14 +205,14 @@ function createRatlsDuplex(socketId, attestation, meta) {
 }
 
 /**
- * Create an https.Agent that establishes RATLS connections
+ * Create an https.Agent that establishes aTLS connections
  *
- * @param {RatlsAgentOptions} options - Options object with target and policy
- * @returns {Agent} An https.Agent that uses RATLS sockets
+ * @param {AtlsAgentOptions} options - Options object with target and policy
+ * @returns {Agent} An https.Agent that uses aTLS sockets
  *
  * @example
  * // Production usage with full verification
- * const agent = createRatlsAgent({
+ * const agent = createAtlsAgent({
  *   target: "enclave.example.com:8443",
  *   policy: {
  *     type: "dstack_tdx",
@@ -226,7 +226,7 @@ function createRatlsDuplex(socketId, attestation, meta) {
  *   }
  * })
  */
-export function createRatlsAgent(options) {
+export function createAtlsAgent(options) {
   if (typeof options === "string") {
     throw new Error(
       "String shorthand no longer supported - policy is required. Use: { target, policy }"
@@ -243,7 +243,7 @@ export function createRatlsAgent(options) {
   const policy = options.policy
   if (!policy) {
     throw new Error(
-      "policy is required for RATLS verification. See docs for policy format."
+      "policy is required for aTLS verification. See docs for policy format."
     )
   }
 
@@ -254,11 +254,11 @@ export function createRatlsAgent(options) {
   // Extract agent-specific options
   const { target, serverName, onAttestation: _, policy: __, ...agentOptions } = options
 
-  class RatlsAgent extends Agent {
+  class AtlsAgent extends Agent {
     createConnection(connectOptions, callback) {
-      ratlsConnect(parsed.hostPort, effectiveServerName, policy)
+      atlsConnect(parsed.hostPort, effectiveServerName, policy)
         .then(({ socketId, attestation }) => {
-          const socket = createRatlsDuplex(socketId, attestation, parsed)
+          const socket = createAtlsDuplex(socketId, attestation, parsed)
 
           // Call user's attestation callback before returning socket
           if (onAttestation) {
@@ -276,21 +276,21 @@ export function createRatlsAgent(options) {
     }
   }
 
-  return new RatlsAgent({
+  return new AtlsAgent({
     keepAlive: true,
     ...agentOptions,
   })
 }
 
 /**
- * Create a fetch function that uses RATLS for requests to the target,
+ * Create a fetch function that uses aTLS for requests to the target,
  * and falls back to native global fetch for everything else.
  *
- * @param {RatlsFetchOptions} options - Options object with target and policy
+ * @param {AtlsFetchOptions} options - Options object with target and policy
  * @returns {Function} A fetch-compatible function
  *
  * @example
- * const fetch = createRatlsFetch({
+ * const fetch = createAtlsFetch({
  *   target: "enclave.example.com",
  *   policy: {
  *     type: "dstack_tdx",
@@ -303,10 +303,10 @@ export function createRatlsAgent(options) {
  * const res = await fetch("/api/data", { method: "POST", body: JSON.stringify({}) })
  *
  * @example With AI SDK
- * const fetch = createRatlsFetch({ target: "enclave.example.com", policy, onAttestation: console.log })
+ * const fetch = createAtlsFetch({ target: "enclave.example.com", policy, onAttestation: console.log })
  * const openai = createOpenAI({ baseURL: "https://enclave.example.com/v1", fetch })
  */
-export function createRatlsFetch(options) {
+export function createAtlsFetch(options) {
   if (typeof options === "string") {
     throw new Error(
       "String shorthand no longer supported - policy is required. Use: { target, policy }"
@@ -321,15 +321,15 @@ export function createRatlsFetch(options) {
 
   if (!options.policy) {
     throw new Error(
-      "policy is required for RATLS verification. See docs for policy format."
+      "policy is required for aTLS verification. See docs for policy format."
     )
   }
 
   const parsed = parseTarget(options.target)
-  const agent = createRatlsAgent(options)
+  const agent = createAtlsAgent(options)
   const defaultHeaders = options.headers || undefined
 
-  return async function ratlsFetch(input, init = {}) {
+  return async function atlsFetch(input, init = {}) {
     let destUrl = null
     let isRelative = false
 
@@ -384,7 +384,7 @@ export function createRatlsFetch(options) {
           status: res.statusCode,
           headers: res.headers,
         })
-        const attestation = res.socket?.ratlsAttestation
+        const attestation = res.socket?.atlsAttestation
         const responseHeaders = toWebHeaders(res.headers)
         const webStream = Readable.toWeb(res)
 
@@ -519,4 +519,4 @@ function normalizeBody(body) {
 // Re-export merge utility for users to construct app_compose
 export { mergeWithDefaultAppCompose }
 
-export default createRatlsAgent
+export default createAtlsAgent

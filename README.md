@@ -1,4 +1,4 @@
-# RA-TLS Toolkit
+# aTLS Toolkit
 
 Portable Remote Attestation for the modern web. This toolkit delivers verified TLS connections to TEEs from browsers (via WASM) without relying on platform-native attestation stacks.
 
@@ -19,27 +19,27 @@ Browsers lack raw TCP sockets and attestation primitives. The toolkit uses WebSo
 
 1. **Handshake:** WASM client completes TLS 1.3 over a WebSocket connection.
 2. **Quote Fetch:** Client issues an HTTP request to fetch the hardware quote.
-3. **Verification:** `ratls-core` validates the quote against the TLS certificate and user policy.
+3. **Verification:** `atls-core` validates the quote against the TLS certificate and user policy.
 
 ---
 
 # 3. Component Guide
 
 ## `core/`
-- `ratls_connect`: Handshake + verification over a generic async byte stream.
-- `RatlsVerifier` trait: Extensible verification interface for different TEE types.
+- `atls_connect`: Handshake + verification over a generic async byte stream.
+- `AtlsVerifier` trait: Extensible verification interface for different TEE types.
 - `DstackTdxPolicy`: Configures TDX verification including bootchain, app compose, and TCB status.
 
 ## `wasm/`
-- `RatlsHttp`: HTTP client over attested TLS with chunked transfer encoding support.
+- `AtlsHttp`: HTTP client over attested TLS with chunked transfer encoding support.
 - `AttestedStream`: Low-level attested TLS stream for custom protocols.
-- `createRatlsFetch(...)`: Fetch-compatible API for browser applications.
+- `createAtlsFetch(...)`: Fetch-compatible API for browser applications.
 
 Example:
 ```javascript
-import { createRatlsFetch } from "./pkg/ratls-fetch.js";
+import { createAtlsFetch } from "./pkg/atls-fetch.js";
 
-const fetch = createRatlsFetch({
+const fetch = createAtlsFetch({
   proxyUrl: "ws://127.0.0.1:9000",
   targetHost: "secure-enclave.com",
   onAttestation: (att) => console.log("TEE:", att.teeType)
@@ -58,18 +58,18 @@ console.log(response.attestation); // { trusted: true, teeType: "Tdx", ... }
 
 ## Additional Directories
 - `python/`: PyO3 bindings with async helpers.
-- `server-examples/`: Reference RA-TLS servers for TDX/SNP (coming soon).
+- `server-examples/`: Reference aTLS servers for TDX/SNP (coming soon).
 - `docs/`: Design notes, specs, and task tracking.
 
 ## Binding status
-- WASM: functional; provides `RatlsHttp`, `AttestedStream`, and `createRatlsFetch`.
+- WASM: functional; provides `AtlsHttp`, `AttestedStream`, and `createAtlsFetch`.
 - Python: scaffolding in progress (`python/README.md`) with planned async API parity once the core pieces stabilize.
 
 ---
 
 # 4. Policy Configuration
 
-Policies describe what constitutes an acceptable attestation. The `ratls-core` API (and each binding) consumes a `Policy` enum with the following shape:
+Policies describe what constitutes an acceptable attestation. The `atls-core` API (and each binding) consumes a `Policy` enum with the following shape:
 
 ```json
 {
