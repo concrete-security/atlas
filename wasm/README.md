@@ -1,15 +1,15 @@
 # wasm (browser client)
 
-WASM bindings for RA-TLS attested connections. The module performs TLS 1.3 inside WASM and uses WebSocket tunnels via a proxy.
+WASM bindings for aTLS attested connections. The module performs TLS 1.3 inside WASM and uses WebSocket tunnels via a proxy.
 
 ## Architecture
 
 The WASM module handles **attested TLS + HTTP/1.1 protocol** (including chunked transfer encoding for streaming LLM responses).
 
 ```
-Browser (ratls-fetch.js)          WASM (ratls_wasm)           Proxy              TEE
+Browser (atls-fetch.js)          WASM (atls_wasm)           Proxy              TEE
         │                               │                       │                  │
-        │──── RatlsHttp.connect ───────►│                       │                  │
+        │──── AtlsHttp.connect ───────►│                       │                  │
         │                               │──── WebSocket ───────►│                  │
         │                               │                       │──── TCP ────────►│
         │                               │◄──── TLS handshake + attestation ───────►│
@@ -36,16 +36,16 @@ make build-wasm
 
 ## API
 
-### `createRatlsFetch(options)`
+### `createAtlsFetch(options)`
 
 Fetch-compatible API (HTTP handling in Rust/WASM):
 
 ```javascript
-import { init, createRatlsFetch } from "./pkg/ratls-fetch.js";
+import { init, createAtlsFetch } from "./pkg/atls-fetch.js";
 
 await init();
 
-const fetch = createRatlsFetch({
+const fetch = createAtlsFetch({
   proxyUrl: "ws://127.0.0.1:9000",
   targetHost: "vllm.example.com",
   onAttestation: (att) => console.log("TEE:", att.teeType)
@@ -62,16 +62,16 @@ console.log(response.status);
 console.log(response.attestation); // { trusted: true, teeType: "Tdx", ... }
 ```
 
-### Low-level: `RatlsHttp`
+### Low-level: `AtlsHttp`
 
 HTTP client with streaming body support:
 
 ```javascript
-import init, { RatlsHttp } from "./pkg/ratls_wasm.js";
+import init, { AtlsHttp } from "./pkg/atls_wasm.js";
 
 await init();
 
-const http = await RatlsHttp.connect(
+const http = await AtlsHttp.connect(
   "ws://127.0.0.1:9000?target=vllm.example.com:443",
   "vllm.example.com"
 );
@@ -93,7 +93,7 @@ const reader = result.body.getReader();
 Direct access to the raw attested TLS stream (no HTTP handling):
 
 ```javascript
-import init, { AttestedStream } from "./pkg/ratls_wasm.js";
+import init, { AttestedStream } from "./pkg/atls_wasm.js";
 
 await init();
 
@@ -115,10 +115,10 @@ The `proxy/` directory contains a WebSocket-to-TCP forwarder:
 
 ```bash
 # Required: set allowlist for security
-export RATLS_PROXY_ALLOWLIST="vllm.example.com:443,other.tee.com:443"
-export RATLS_PROXY_LISTEN="127.0.0.1:9000"
+export ATLS_PROXY_ALLOWLIST="vllm.example.com:443,other.tee.com:443"
+export ATLS_PROXY_LISTEN="127.0.0.1:9000"
 
-cargo run -p ratls-proxy
+cargo run -p atls-proxy
 ```
 
 The proxy just forwards bytes - it doesn't terminate TLS. All encryption and attestation verification happens in the browser.

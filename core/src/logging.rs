@@ -1,10 +1,10 @@
-//! Logging initialization for ratls-core.
+//! Logging initialization for atls-core.
 //!
 //! This module provides cross-platform logging support:
-//! - On native targets: Uses `env_logger`, controlled by `DEBUG_RATLS` env var
+//! - On native targets: Uses `env_logger`, controlled by `DEBUG_ATLS` env var
 //! - On WASM targets: Uses `console_log` for browser/Node.js console output
 //!
-//! Logging is automatically initialized on first use of `ratls_connect`.
+//! Logging is automatically initialized on first use of `atls_connect`.
 //! Users can also call `init()` manually for early initialization.
 
 use std::sync::OnceLock;
@@ -19,7 +19,7 @@ static INIT: OnceLock<()> = OnceLock::new();
 /// # Behavior
 ///
 /// ## Native (non-WASM)
-/// - If `DEBUG_RATLS=1` or `DEBUG_RATLS=true` env var is set, enables DEBUG level
+/// - If `DEBUG_ATLS=1` or `DEBUG_ATLS=true` env var is set, enables DEBUG level
 /// - If the `debug-logging` feature is enabled, enables DEBUG level
 /// - Otherwise, logging is set to ERROR level (effectively silent)
 ///
@@ -46,7 +46,7 @@ fn init_impl() {
     };
 
     env_logger::Builder::new()
-        .filter_module("ratls_core", level)
+        .filter_module("atls_core", level)
         .format_timestamp_millis()
         .try_init()
         .ok(); // Ignore error if already initialized
@@ -54,7 +54,7 @@ fn init_impl() {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn is_debug_env_set() -> bool {
-    std::env::var("DEBUG_RATLS")
+    std::env::var("DEBUG_ATLS")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false)
 }

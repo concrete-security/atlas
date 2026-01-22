@@ -5,7 +5,7 @@
 //! making them easy to load from JSON configuration files.
 
 use crate::dstack::DstackTdxPolicy;
-use crate::error::RatlsVerificationError;
+use crate::error::AtlsVerificationError;
 use crate::verifier::{IntoVerifier, Verifier};
 use serde::{Deserialize, Serialize};
 
@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 /// # Example
 ///
 /// ```
-/// use ratls_core::{Policy, DstackTdxPolicy};
+/// use atls_core::{Policy, DstackTdxPolicy};
 ///
 /// // Default policy
 /// let policy = Policy::default();
@@ -49,12 +49,12 @@ impl Policy {
     /// # Example
     ///
     /// ```
-    /// use ratls_core::{Policy, DstackTdxPolicy};
+    /// use atls_core::{Policy, DstackTdxPolicy};
     ///
     /// let policy = Policy::DstackTdx(DstackTdxPolicy::dev());
     /// let verifier = policy.into_verifier().unwrap();
     /// ```
-    pub fn into_verifier(self) -> Result<Verifier, RatlsVerificationError> {
+    pub fn into_verifier(self) -> Result<Verifier, AtlsVerificationError> {
         match self {
             Policy::DstackTdx(policy) => {
                 Ok(Verifier::DstackTdx(policy.into_verifier()?))

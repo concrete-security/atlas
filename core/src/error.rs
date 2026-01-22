@@ -1,10 +1,10 @@
-//! Error types for RATLS verification.
+//! Error types for aTLS verification.
 
 use thiserror::Error;
 
-/// Errors that can occur during RATLS verification.
+/// Errors that can occur during aTLS verification.
 #[derive(Debug, Error)]
-pub enum RatlsVerificationError {
+pub enum AtlsVerificationError {
     /// I/O error during communication.
     #[error("I/O error: {0}")]
     Io(String),

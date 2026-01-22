@@ -89,9 +89,9 @@ export function mergeWithDefaultAppCompose(userCompose: Partial<AppCompose>): Ap
 // ============================================================================
 
 /**
- * Attestation result from RATLS handshake
+ * Attestation result from aTLS handshake
  */
-export interface RatlsAttestation {
+export interface AtlsAttestation {
   /** Whether the attestation verification succeeded */
   trusted: boolean
   /** Type of Trusted Execution Environment (e.g., "tdx", "sgx") */
@@ -107,17 +107,17 @@ export interface RatlsAttestation {
 /**
  * Response type with attestation data
  */
-export type RatlsResponse = Response & { attestation?: RatlsAttestation }
+export type AtlsResponse = Response & { attestation?: AtlsAttestation }
 
 /**
- * Fetch function type returned by createRatlsFetch
+ * Fetch function type returned by createAtlsFetch
  */
-export type RatlsFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<RatlsResponse>
+export type AtlsFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<AtlsResponse>
 
 /**
- * Options for createRatlsFetch
+ * Options for createAtlsFetch
  */
-export interface RatlsFetchOptions {
+export interface AtlsFetchOptions {
   /** Target host with optional port (e.g., "enclave.example.com" or "enclave.example.com:8443") */
   target: string
   /** Verification policy */
@@ -130,15 +130,15 @@ export interface RatlsFetchOptions {
    * Callback invoked after attestation, before request proceeds.
    * Throw an error to reject the connection.
    */
-  onAttestation?: (attestation: RatlsAttestation) => void
+  onAttestation?: (attestation: AtlsAttestation) => void
 }
 
 /**
- * Create a fetch function that uses RATLS for requests to the configured target (other hosts use native fetch)
+ * Create a fetch function that uses aTLS for requests to the configured target (other hosts use native fetch)
  *
  * @example Production usage with full verification
  * ```ts
- * import { createRatlsFetch, mergeWithDefaultAppCompose } from "ratls-node"
+ * import { createAtlsFetch, mergeWithDefaultAppCompose } from "atls-node"
  *
  * const policy: Policy = {
  *   type: "dstack_tdx",
@@ -156,7 +156,7 @@ export interface RatlsFetchOptions {
  *   allowed_tcb_status: ["UpToDate", "SWHardeningNeeded"]
  * }
  *
- * const fetch = createRatlsFetch({ target: "enclave.example.com", policy })
+ * const fetch = createAtlsFetch({ target: "enclave.example.com", policy })
  * const response = await fetch("/api/data")
  * console.log(response.attestation?.teeType) // "tdx"
  * ```
@@ -171,15 +171,15 @@ export interface RatlsFetchOptions {
  *   allowed_tcb_status: ["UpToDate", "SWHardeningNeeded", "OutOfDate"]
  * }
  *
- * const fetch = createRatlsFetch({ target: "enclave.example.com", policy: devPolicy })
+ * const fetch = createAtlsFetch({ target: "enclave.example.com", policy: devPolicy })
  * ```
  *
  * @example With AI SDK
  * ```ts
- * import { createRatlsFetch } from "ratls-node"
+ * import { createAtlsFetch } from "atls-node"
  * import { createOpenAI } from "@ai-sdk/openai"
  *
- * const fetch = createRatlsFetch({
+ * const fetch = createAtlsFetch({
  *   target: "enclave.example.com",
  *   policy,
  *   onAttestation: (att) => console.log("TEE:", att.teeType)
@@ -187,24 +187,24 @@ export interface RatlsFetchOptions {
  * const openai = createOpenAI({ baseURL: "https://enclave.example.com/v1", fetch })
  * ```
  */
-export function createRatlsFetch(options: RatlsFetchOptions): RatlsFetch
+export function createAtlsFetch(options: AtlsFetchOptions): AtlsFetch
 
 // --- Advanced: https.Agent for use with axios, https.request, etc. ---
 
 /**
- * A Duplex socket with RATLS attestation attached
+ * A Duplex socket with aTLS attestation attached
  */
-export interface RatlsSocket extends Duplex {
-  readonly ratlsAttestation: RatlsAttestation
+export interface AtlsSocket extends Duplex {
+  readonly atlsAttestation: AtlsAttestation
   readonly encrypted: true
   readonly authorized: boolean
   readonly authorizationError: string | null
 }
 
 /**
- * Options for createRatlsAgent
+ * Options for createAtlsAgent
  */
-export interface RatlsAgentOptions extends AgentOptions {
+export interface AtlsAgentOptions extends AgentOptions {
   /** Target host with optional port */
   target: string
   /** Verification policy */
@@ -212,13 +212,13 @@ export interface RatlsAgentOptions extends AgentOptions {
   /** Optional SNI hostname override */
   serverName?: string
   /** Callback invoked after attestation */
-  onAttestation?: (attestation: RatlsAttestation, socket: RatlsSocket) => void
+  onAttestation?: (attestation: AtlsAttestation, socket: AtlsSocket) => void
 }
 
 /**
  * Create an https.Agent for use with axios, https.request, etc.
- * For most use cases, prefer createRatlsFetch() instead.
+ * For most use cases, prefer createAtlsFetch() instead.
  */
-export function createRatlsAgent(options: RatlsAgentOptions): Agent
+export function createAtlsAgent(options: AtlsAgentOptions): Agent
 
-export default createRatlsFetch
+export default createAtlsFetch

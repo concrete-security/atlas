@@ -1,4 +1,4 @@
-//! WASM bindings for RA-TLS attested connections.
+//! WASM bindings for aTLS connections.
 //!
 //! This module provides a minimal API for establishing attested TLS connections
 //! from browsers. It exposes native Web Streams (ReadableStream) for response reading.
@@ -17,7 +17,7 @@ use futures::AsyncReadExt;
 use http_body_util::{BodyExt, Full};
 use hyper::client::conn::http1;
 use hyper::Request;
-use ratls_core::{dstack::merge_with_default_app_compose, ratls_connect, AsyncWriteExt, Policy, TlsStream};
+use atls_core::{dstack::merge_with_default_app_compose, atls_connect, AsyncWriteExt, Policy, TlsStream};
 use serde::Serialize;
 use std::{cell::RefCell, rc::Rc};
 use wasm_bindgen::prelude::*;
@@ -109,7 +109,7 @@ pub struct AttestedStream {
 
 #[wasm_bindgen]
 impl AttestedStream {
-    /// Connect to a TEE server via WebSocket proxy and perform RA-TLS handshake.
+    /// Connect to a TEE server via WebSocket proxy and perform aTLS protocol.
     ///
     /// Returns an AttestedStream with:
     /// - `readable`: Native ReadableStream for response data
@@ -135,8 +135,8 @@ impl AttestedStream {
             .await
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
 
-        // 2. Perform RA-TLS handshake
-        let (tls, report) = ratls_connect(
+        // 2. Perform aTLS protocol
+        let (tls, report) = atls_connect(
             ws_stream.into_io(),
             server_name,
             policy,
@@ -150,7 +150,7 @@ impl AttestedStream {
         let readable = create_readable_stream(reader);
 
         let attestation = match &report {
-            ratls_core::Report::Tdx(verified) => AttestationSummary {
+            atls_core::Report::Tdx(verified) => AttestationSummary {
                 trusted: true,
                 tee_type: "Tdx".to_string(),
                 tcb_status: verified.status.clone(),
@@ -173,7 +173,7 @@ impl AttestedStream {
         self.readable.clone()
     }
 
-    /// Get the attestation result from the RA-TLS handshake.
+    /// Get the attestation result from the aTLS protocol.
     #[wasm_bindgen(js_name = attestation)]
     pub fn attestation(&self) -> Result<JsValue, JsValue> {
         serde_wasm_bindgen::to_value(&self.attestation)
@@ -227,7 +227,7 @@ use hyper::client::conn::http1::SendRequest;
 /// - Is a battle-tested, widely-used HTTP implementation
 /// - Supports connection reuse via HTTP/1.1 keep-alive
 #[wasm_bindgen]
-pub struct RatlsHttp {
+pub struct AtlsHttp {
     /// The hyper HTTP/1.1 sender - can make multiple requests on the same connection.
     /// Stored as Option to allow detecting when the connection is closed.
     sender: Rc<RefCell<Option<SendRequest<Full<Bytes>>>>>,
@@ -235,8 +235,8 @@ pub struct RatlsHttp {
 }
 
 #[wasm_bindgen]
-impl RatlsHttp {
-    /// Connect to a TEE server and perform RA-TLS handshake.
+impl AtlsHttp {
+    /// Connect to a TEE server and perform aTLS protocol.
     ///
     /// This establishes an HTTP/1.1 connection that can be reused for multiple requests.
     /// The connection uses HTTP keep-alive by default.
@@ -250,7 +250,7 @@ impl RatlsHttp {
         ws_url: &str,
         server_name: &str,
         policy_js: JsValue,
-    ) -> Result<RatlsHttp, JsValue> {
+    ) -> Result<AtlsHttp, JsValue> {
         // Parse policy from JS object
         let policy: Policy = serde_wasm_bindgen::from_value(policy_js)
             .map_err(|e| JsValue::from_str(&format!("invalid policy: {e}")))?;
@@ -259,7 +259,7 @@ impl RatlsHttp {
             .await
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
 
-        let (tls, report) = ratls_connect(
+        let (tls, report) = atls_connect(
             ws_stream.into_io(),
             server_name,
             policy,
@@ -269,7 +269,7 @@ impl RatlsHttp {
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
 
         let attestation = match &report {
-            ratls_core::Report::Tdx(verified) => AttestationSummary {
+            atls_core::Report::Tdx(verified) => AttestationSummary {
                 trusted: true,
                 tee_type: "Tdx".to_string(),
                 tcb_status: verified.status.clone(),
@@ -296,7 +296,7 @@ impl RatlsHttp {
             }
         });
 
-        Ok(RatlsHttp {
+        Ok(AtlsHttp {
             sender: Rc::new(RefCell::new(Some(sender))),
             attestation,
         })

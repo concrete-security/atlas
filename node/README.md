@@ -1,11 +1,11 @@
-# ratls-node
+# atls-node
 
 Attested TLS connections for Node.js. Connect securely to Trusted Execution Environments (TEEs) with cryptographic proof of their integrity.
 
 ## Installation
 
 ```bash
-npm install ratls-node
+npm install atls-node
 ```
 
 Prebuilt binaries are included for:
@@ -16,9 +16,9 @@ Prebuilt binaries are included for:
 ## Quick Start
 
 ```typescript
-import { createRatlsFetch } from "ratls-node"
+import { createAtlsFetch } from "atls-node"
 
-const fetch = createRatlsFetch("enclave.example.com")
+const fetch = createAtlsFetch("enclave.example.com")
 const response = await fetch("/api/secure-data")
 
 console.log(response.attestation.trusted)  // true
@@ -30,11 +30,11 @@ console.log(response.attestation.teeType)  // "tdx"
 Connect to LLM inference servers running in TEEs (vLLM, etc.):
 
 ```typescript
-import { createRatlsFetch } from "ratls-node"
+import { createAtlsFetch } from "atls-node"
 import { createOpenAI } from "@ai-sdk/openai"
 import { streamText } from "ai"
 
-const fetch = createRatlsFetch({
+const fetch = createAtlsFetch({
   target: "enclave.example.com",
   onAttestation: (att) => console.log(`TEE verified: ${att.teeType}`)
 })
@@ -60,22 +60,22 @@ for await (const chunk of textStream) {
 
 ## API
 
-### `createRatlsFetch(target)`
+### `createAtlsFetch(target)`
 
 Create an attested fetch function with a simple target string:
 
 ```typescript
-const fetch = createRatlsFetch("enclave.example.com")
+const fetch = createAtlsFetch("enclave.example.com")
 // or with port
-const fetch = createRatlsFetch("enclave.example.com:8443")
+const fetch = createAtlsFetch("enclave.example.com:8443")
 ```
 
-### `createRatlsFetch(options)`
+### `createAtlsFetch(options)`
 
 Create with full configuration:
 
 ```typescript
-const fetch = createRatlsFetch({
+const fetch = createAtlsFetch({
   target: "enclave.example.com",      // Required: host with optional port
   serverName: "enclave.example.com",  // Optional: SNI override
   headers: { "X-Custom": "value" },   // Optional: default headers
@@ -89,22 +89,22 @@ const fetch = createRatlsFetch({
 })
 ```
 
-### `createRatlsAgent(options)`
+### `createAtlsAgent(options)`
 
 For use with `https.request`, axios, or other HTTP clients:
 
 ```typescript
-import { createRatlsAgent } from "ratls-node"
+import { createAtlsAgent } from "atls-node"
 import https from "https"
 
-const agent = createRatlsAgent({
+const agent = createAtlsAgent({
   target: "enclave.example.com",
   onAttestation: (att) => console.log("Verified:", att.teeType)
 })
 
 // Use with https.request
 https.get("https://enclave.example.com/api", { agent }, (res) => {
-  // res.socket.ratlsAttestation contains attestation data
+  // res.socket.atlsAttestation contains attestation data
 })
 
 // Use with axios
@@ -158,10 +158,10 @@ Requires Rust 1.88+ and Node.js 18+:
 
 ```bash
 # Build the native module
-cargo build -p ratls-node --release
+cargo build -p atls-node --release
 
 # Run the demo
-node examples/ai-sdk-openai-demo.mjs "Hello from RA-TLS"
+node examples/ai-sdk-openai-demo.mjs "Hello from aTLS"
 ```
 
 ### Using napi-rs CLI
@@ -191,8 +191,8 @@ git push --tags
 
 The GitHub Actions workflow will:
 - Build native binaries for all platforms (macOS, Linux, Windows)
-- Publish platform-specific packages (`@ratls-node/darwin-arm64`, etc.)
-- Publish the main `ratls-node` package
+- Publish platform-specific packages (`@atls-node/darwin-arm64`, etc.)
+- Publish the main `atls-node` package
 
 ### Manual Publishing
 
@@ -212,13 +212,13 @@ The main package has optional dependencies on platform-specific packages:
 
 | Package | Platform |
 |---------|----------|
-| `@ratls-node/darwin-arm64` | macOS Apple Silicon |
-| `@ratls-node/darwin-x64` | macOS Intel |
-| `@ratls-node/linux-x64-gnu` | Linux x64 (glibc) |
-| `@ratls-node/linux-x64-musl` | Linux x64 (musl/Alpine) |
-| `@ratls-node/linux-arm64-gnu` | Linux ARM64 (glibc) |
-| `@ratls-node/linux-arm64-musl` | Linux ARM64 (musl/Alpine) |
-| `@ratls-node/win32-x64-msvc` | Windows x64 |
+| `@atls-node/darwin-arm64` | macOS Apple Silicon |
+| `@atls-node/darwin-x64` | macOS Intel |
+| `@atls-node/linux-x64-gnu` | Linux x64 (glibc) |
+| `@atls-node/linux-x64-musl` | Linux x64 (musl/Alpine) |
+| `@atls-node/linux-arm64-gnu` | Linux ARM64 (glibc) |
+| `@atls-node/linux-arm64-musl` | Linux ARM64 (musl/Alpine) |
+| `@atls-node/win32-x64-msvc` | Windows x64 |
 
 ## How It Works
 
@@ -235,10 +235,10 @@ All verification happens automatically on each request. The attestation result i
 Full TypeScript definitions are included:
 
 ```typescript
-import { createRatlsFetch, RatlsFetch, RatlsAttestation, RatlsResponse } from "ratls-node"
+import { createAtlsFetch, AtlsFetch, AtlsAttestation, AtlsResponse } from "atls-node"
 
-const fetch: RatlsFetch = createRatlsFetch("enclave.example.com")
+const fetch: AtlsFetch = createAtlsFetch("enclave.example.com")
 
-const response: RatlsResponse = await fetch("/api")
-const attestation: RatlsAttestation = response.attestation
+const response: AtlsResponse = await fetch("/api")
+const attestation: AtlsAttestation = response.attestation
 ```

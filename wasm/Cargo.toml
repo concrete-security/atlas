@@ -1,5 +1,5 @@
 [package]
-name = "ratls-wasm"
+name = "atls-wasm"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
@@ -9,11 +9,11 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = ["debug-logging"]
-# Enable debug logging (forwarded to ratls-core)
-debug-logging = ["ratls-core/debug-logging"]
+# Enable debug logging (forwarded to atls-core)
+debug-logging = ["atls-core/debug-logging"]
 
 [dependencies]
-ratls-core = { path = "../core" }
+atls-core = { path = "../core" }
 futures = "0.3"
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"

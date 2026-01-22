@@ -1,7 +1,7 @@
 /**
- * Minimal RA-TLS Demo - Shows TEE attestation with full verification
+ * Minimal aTLS Demo - Shows TEE attestation with full verification
  */
-import { init, createRatlsFetch, mergeWithDefaultAppCompose } from "../pkg/ratls-fetch.js";
+import { init, createAtlsFetch, mergeWithDefaultAppCompose } from "../pkg/atls-fetch.js";
 
 const PROXY = "ws://127.0.0.1:9000";
 const output = document.getElementById("output");
@@ -158,7 +158,7 @@ async function run() {
   // 1. Try connecting to a non-TEE server with dev policy (will fail - no attestation)
   log("--- Attempting connection to google.com (non-TEE) ---");
   try {
-    const badFetch = createRatlsFetch({
+    const badFetch = createAtlsFetch({
       proxyUrl: PROXY,
       targetHost: "google.com",
       policy: DEV_POLICY
@@ -172,7 +172,7 @@ async function run() {
   // 2. Connect to a real TEE server with full production policy
   log("\n--- Connecting to TEE server with full verification ---");
   try {
-    const fetch = createRatlsFetch({
+    const fetch = createAtlsFetch({
       proxyUrl: PROXY,
       targetHost: "vllm.concrete-security.com",
       policy: VLLM_POLICY

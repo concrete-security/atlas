@@ -7,7 +7,7 @@ help:
 	@echo "Available targets:"
 	@echo "  make test           # run native Rust tests (core, proxy)"
 	@echo "  make test-proxy     # run proxy unit and integration tests"
-	@echo "  make test-wasm      # cargo check ratls-wasm for wasm32 target"
+	@echo "  make test-wasm      # cargo check atls-wasm for wasm32 target"
 	@echo "  make test-wasm-node # run WASM tests in Node.js via wasm-pack"
 	@echo "  make test-node      # run Node.js binding tests"
 	@echo "  make test-all       # run all tests (native + wasm + node)"
@@ -23,15 +23,15 @@ help:
 
 # Native Rust tests (excludes WASM crate which needs special toolchain)
 test:
-	$(CARGO) test --workspace --exclude ratls-wasm
+	$(CARGO) test --workspace --exclude atls-wasm
 
 # Proxy unit and integration tests
 test-proxy:
-	$(CARGO) test -p ratls-proxy
+	$(CARGO) test -p atls-proxy
 
 # Check WASM crate compiles for wasm32 target
 test-wasm:
-	$(CARGO) check -p ratls-wasm --target wasm32-unknown-unknown
+	$(CARGO) check -p atls-wasm --target wasm32-unknown-unknown
 
 # Run WASM tests in Node.js via wasm-pack
 test-wasm-node:
@@ -46,7 +46,7 @@ test-all: test test-wasm test-node
 
 # Build all native crates
 build:
-	$(CARGO) build --workspace --exclude ratls-wasm
+	$(CARGO) build --workspace --exclude atls-wasm
 
 # Setup WASM toolchain (macOS only - installs LLVM with wasm32 support)
 setup-wasm:
@@ -67,8 +67,8 @@ build-wasm:
 		export AR="$$(brew --prefix llvm)/bin/llvm-ar"; \
 	fi; \
 	cd wasm && wasm-pack build --target web --out-dir pkg
-	@cp -f wasm/src/ratls-fetch.js wasm/pkg/ 2>/dev/null || true
-	@cp -f wasm/src/ratls-fetch.d.ts wasm/pkg/ 2>/dev/null || true
+	@cp -f wasm/src/atls-fetch.js wasm/pkg/ 2>/dev/null || true
+	@cp -f wasm/src/atls-fetch.d.ts wasm/pkg/ 2>/dev/null || true
 
 # Build Node.js bindings
 build-node:
@@ -86,7 +86,7 @@ PROXY_TARGET ?= vllm.concrete-security.com:443
 PROXY_ALLOWLIST ?= $(PROXY_TARGET),google.com:443
 
 demo-wasm:
-	@echo "Starting RA-TLS WASM demo..."
+	@echo "Starting aTLS WASM demo..."
 	@echo "  Proxy:  ws://127.0.0.1:$(PROXY_PORT)"
 	@echo "  Demos:"
 	@echo "    - http://localhost:$(DEMO_PORT)/demo/minimal.html  (basic test)"
@@ -95,7 +95,7 @@ demo-wasm:
 	@echo "Press Ctrl+C to stop both servers"
 	@echo ""
 	@trap 'kill 0' EXIT; \
-	RATLS_PROXY_TARGET="$(PROXY_TARGET)" RATLS_PROXY_ALLOWLIST="$(PROXY_ALLOWLIST)" RATLS_PROXY_LISTEN="127.0.0.1:$(PROXY_PORT)" \
-		$(CARGO) run -p ratls-proxy & \
+	ATLS_PROXY_TARGET="$(PROXY_TARGET)" ATLS_PROXY_ALLOWLIST="$(PROXY_ALLOWLIST)" ATLS_PROXY_LISTEN="127.0.0.1:$(PROXY_PORT)" \
+		$(CARGO) run -p atls-proxy & \
 	sleep 1 && cd wasm && python3 -m http.server $(DEMO_PORT) & \
 	wait

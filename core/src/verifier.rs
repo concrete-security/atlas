@@ -1,8 +1,8 @@
-//! RATLS verifier trait definition.
+//! aTLS verifier trait definition.
 
 use std::future::Future;
 
-use crate::error::RatlsVerificationError;
+use crate::error::AtlsVerificationError;
 use dcap_qvl::verify::VerifiedReport;
 
 // Platform-specific async I/O traits
@@ -24,7 +24,7 @@ pub trait AsyncByteStream: AsyncRead + AsyncWrite + Unpin {}
 #[cfg(target_arch = "wasm32")]
 impl<T: AsyncRead + AsyncWrite + Unpin> AsyncByteStream for T {}
 
-/// Unified report type returned by all RATLS verifiers.
+/// Unified report type returned by all aTLS verifiers.
 ///
 /// Each variant wraps a TEE-specific report type, preserving full type information.
 /// Users can match on the variant to access TEE-specific details.
@@ -32,7 +32,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> AsyncByteStream for T {}
 /// # Example
 ///
 /// ```
-/// use ratls_core::Report;
+/// use atls_core::Report;
 ///
 /// fn handle_report(report: Report) {
 ///     match report {
@@ -69,9 +69,9 @@ impl Report {
     }
 }
 
-/// Trait for async RATLS verifiers.
+/// Trait for async aTLS verifiers.
 ///
-/// This trait defines the interface for verifying remote attestation over TLS.
+/// This trait defines the interface for verifying attestation over TLS.
 /// All methods are async to support both native (tokio) and WASM platforms.
 ///
 /// Implementors provide TEE-specific verification logic, such as TDX quote
@@ -82,33 +82,33 @@ impl Report {
 /// On native platforms, the trait requires `Send + Sync` and futures must be `Send`.
 /// On wasm32, these bounds are relaxed since wasm is single-threaded.
 #[cfg(not(target_arch = "wasm32"))]
-pub trait RatlsVerifier: Send + Sync {
+pub trait AtlsVerifier: Send + Sync {
     /// Verify the remote TEE via the given TLS connection.
     fn verify<S>(
         &self,
         stream: &mut S,
         peer_cert: &[u8],
         hostname: &str,
-    ) -> impl Future<Output = Result<Report, RatlsVerificationError>> + Send
+    ) -> impl Future<Output = Result<Report, AtlsVerificationError>> + Send
     where
         S: AsyncByteStream;
 }
 
-/// Trait for async RATLS verifiers (wasm32 version, no Send required).
+/// Trait for async aTLS verifiers (wasm32 version, no Send required).
 #[cfg(target_arch = "wasm32")]
-pub trait RatlsVerifier: Sync {
+pub trait AtlsVerifier: Sync {
     /// Verify the remote TEE via the given TLS connection.
     fn verify<S>(
         &self,
         stream: &mut S,
         peer_cert: &[u8],
         hostname: &str,
-    ) -> impl Future<Output = Result<Report, RatlsVerificationError>>
+    ) -> impl Future<Output = Result<Report, AtlsVerificationError>>
     where
         S: AsyncByteStream;
 }
 
-/// Trait for types that can be converted into a [`RatlsVerifier`].
+/// Trait for types that can be converted into an [`AtlsVerifier`].
 ///
 /// This trait is implemented by policy types (like [`DstackTdxPolicy`](crate::DstackTdxPolicy))
 /// to convert configuration into a concrete verifier instance.
@@ -116,21 +116,21 @@ pub trait RatlsVerifier: Sync {
 /// # Example
 ///
 /// ```
-/// use ratls_core::{DstackTdxPolicy, IntoVerifier};
+/// use atls_core::{DstackTdxPolicy, IntoVerifier};
 ///
 /// let policy = DstackTdxPolicy::dev();
 /// let verifier = policy.into_verifier().unwrap();
 /// ```
 pub trait IntoVerifier {
     /// The verifier type produced by this conversion.
-    type Verifier: RatlsVerifier;
+    type Verifier: AtlsVerifier;
 
     /// Convert this policy/config into a verifier.
     ///
     /// # Errors
     ///
     /// Returns an error if the configuration is invalid or incomplete.
-    fn into_verifier(self) -> Result<Self::Verifier, RatlsVerificationError>;
+    fn into_verifier(self) -> Result<Self::Verifier, AtlsVerificationError>;
 }
 
 /// Enum wrapping all concrete verifier implementations.
@@ -141,7 +141,7 @@ pub trait IntoVerifier {
 /// # Example
 ///
 /// ```
-/// use ratls_core::{Policy, DstackTdxPolicy, RatlsVerifier};
+/// use atls_core::{Policy, DstackTdxPolicy, AtlsVerifier};
 ///
 /// let policy = Policy::DstackTdx(DstackTdxPolicy::dev());
 /// let verifier = policy.into_verifier().unwrap();
@@ -155,13 +155,13 @@ pub enum Verifier {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-impl RatlsVerifier for Verifier {
+impl AtlsVerifier for Verifier {
     fn verify<S>(
         &self,
         stream: &mut S,
         peer_cert: &[u8],
         hostname: &str,
-    ) -> impl Future<Output = Result<Report, RatlsVerificationError>> + Send
+    ) -> impl Future<Output = Result<Report, AtlsVerificationError>> + Send
     where
         S: AsyncByteStream,
     {
@@ -174,13 +174,13 @@ impl RatlsVerifier for Verifier {
 }
 
 #[cfg(target_arch = "wasm32")]
-impl RatlsVerifier for Verifier {
+impl AtlsVerifier for Verifier {
     fn verify<S>(
         &self,
         stream: &mut S,
         peer_cert: &[u8],
         hostname: &str,
-    ) -> impl Future<Output = Result<Report, RatlsVerificationError>>
+    ) -> impl Future<Output = Result<Report, AtlsVerificationError>>
     where
         S: AsyncByteStream,
     {

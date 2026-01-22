@@ -13,8 +13,8 @@ use sha2::{Digest, Sha256};
 
 use crate::dstack::compose_hash::get_compose_hash;
 use crate::dstack::config::DstackTDXVerifierConfig;
-use crate::error::RatlsVerificationError;
-use crate::verifier::{AsyncByteStream, AsyncReadExt, AsyncWriteExt, RatlsVerifier, Report};
+use crate::error::AtlsVerificationError;
+use crate::verifier::{AsyncByteStream, AsyncReadExt, AsyncWriteExt, AtlsVerifier, Report};
 
 pub use crate::dstack::config::DstackTDXVerifierBuilder;
 
@@ -55,16 +55,16 @@ pub struct DstackTDXVerifier {
 
 impl DstackTDXVerifier {
     /// Create a new DstackTDXVerifier with the given configuration.
-    pub fn new(config: DstackTDXVerifierConfig) -> Result<Self, RatlsVerificationError> {
+    pub fn new(config: DstackTDXVerifierConfig) -> Result<Self, AtlsVerificationError> {
         // Validation: bootchain and os_image_hash must be provided together
         if !config.disable_runtime_verification {
             if config.expected_bootchain.is_none() || config.os_image_hash.is_none() {
-                return Err(RatlsVerificationError::Configuration(
+                return Err(AtlsVerificationError::Configuration(
                     "expected_bootchain and os_image_hash must be provided together".into(),
                 ));
             }
             if config.app_compose.is_none() {
-                return Err(RatlsVerificationError::Configuration(
+                return Err(AtlsVerificationError::Configuration(
                     "app_compose must be provided".into(),
                 ));
             }
@@ -81,7 +81,7 @@ impl DstackTDXVerifier {
     }
 
     /// Verify quote using dcap-qvl directly.
-    async fn verify_quote(&self, quote: &[u8]) -> Result<VerifiedReport, RatlsVerificationError> {
+    async fn verify_quote(&self, quote: &[u8]) -> Result<VerifiedReport, AtlsVerificationError> {
         let pccs_url = self.config.pccs_url.as_deref().unwrap_or_default();
         let pccs_url = if pccs_url.is_empty() {
             "https://api.trustedservices.intel.com"
@@ -91,15 +91,15 @@ impl DstackTDXVerifier {
 
         // Parse quote to get cache key components (FMSPC and CA)
         let parsed_quote = Quote::parse(quote)
-            .map_err(|e| RatlsVerificationError::Quote(format!("Failed to parse quote: {}", e)))?;
+            .map_err(|e| AtlsVerificationError::Quote(format!("Failed to parse quote: {}", e)))?;
         let fmspc = hex::encode_upper(
             parsed_quote
                 .fmspc()
-                .map_err(|e| RatlsVerificationError::Quote(format!("Failed to get FMSPC: {}", e)))?,
+                .map_err(|e| AtlsVerificationError::Quote(format!("Failed to get FMSPC: {}", e)))?,
         );
         let ca = parsed_quote
             .ca()
-            .map_err(|e| RatlsVerificationError::Quote(format!("Failed to get CA: {}", e)))?;
+            .map_err(|e| AtlsVerificationError::Quote(format!("Failed to get CA: {}", e)))?;
 
         let cache_key = (pccs_url.to_string(), fmspc.clone(), ca);
 
@@ -108,7 +108,7 @@ impl DstackTDXVerifier {
         let now_secs = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|e| {
-                RatlsVerificationError::Quote(format!("Failed to get current time: {}", e))
+                AtlsVerificationError::Quote(format!("Failed to get current time: {}", e))
             })?
             .as_secs();
 
@@ -148,7 +148,7 @@ impl DstackTDXVerifier {
                 let c = get_collateral(pccs_url, quote)
                     .await
                     .map_err(|e| {
-                        RatlsVerificationError::Quote(format!("Failed to get collateral: {}", e))
+                        AtlsVerificationError::Quote(format!("Failed to get collateral: {}", e))
                     })?;
 
                 // Cache if enabled
@@ -174,7 +174,7 @@ impl DstackTDXVerifier {
 
         // Verify the quote
         let report = verify(quote, &collateral, now_secs)
-            .map_err(|e| RatlsVerificationError::Quote(format!("DCAP verification failed: {}", e)))?;
+            .map_err(|e| AtlsVerificationError::Quote(format!("DCAP verification failed: {}", e)))?;
 
         debug!("DCAP verification complete, TCB status: {}", report.status);
 
@@ -191,7 +191,7 @@ impl DstackTDXVerifier {
         );
 
         if !tcb_allowed {
-            return Err(RatlsVerificationError::TcbStatusNotAllowed {
+            return Err(AtlsVerificationError::TcbStatusNotAllowed {
                 status: report.status.clone(),
                 allowed: self.config.allowed_tcb_status.clone(),
             });
@@ -209,14 +209,14 @@ impl DstackTDXVerifier {
     fn verify_bootchain(
         &self,
         verified_report: &VerifiedReport,
-    ) -> Result<(), RatlsVerificationError> {
+    ) -> Result<(), AtlsVerificationError> {
         let bootchain = self.config.expected_bootchain.as_ref().ok_or_else(|| {
-            RatlsVerificationError::Configuration("expected_bootchain is required".into())
+            AtlsVerificationError::Configuration("expected_bootchain is required".into())
         })?;
 
         // Get the trusted TD report from DCAP verification
         let td_report = verified_report.report.as_td10().ok_or_else(|| {
-            RatlsVerificationError::TeeTypeMismatch(
+            AtlsVerificationError::TeeTypeMismatch(
                 "expected TDX report but got SGX enclave report".into(),
             )
         })?;
@@ -231,7 +231,7 @@ impl DstackTDXVerifier {
         debug!("MRTD match: {}", mrtd_match);
 
         if !mrtd_match {
-            return Err(RatlsVerificationError::BootchainMismatch {
+            return Err(AtlsVerificationError::BootchainMismatch {
                 field: "mrtd".into(),
                 expected: bootchain.mrtd.clone(),
                 actual: actual_mrtd,
@@ -253,7 +253,7 @@ impl DstackTDXVerifier {
             debug!("RTMR{} match: {}", idx, rtmr_match);
 
             if !rtmr_match {
-                return Err(RatlsVerificationError::BootchainMismatch {
+                return Err(AtlsVerificationError::BootchainMismatch {
                     field: format!("rtmr{}", idx),
                     expected: expected_rtmrs[idx].clone(),
                     actual: actual_rtmrs[idx].clone(),
@@ -273,7 +273,7 @@ impl DstackTDXVerifier {
         &self,
         cert_der: &[u8],
         events: &[EventLog],
-    ) -> Result<bool, RatlsVerificationError> {
+    ) -> Result<bool, AtlsVerificationError> {
         let cert_hash = hex::encode(Sha256::digest(cert_der));
         debug!("Certificate hash: {}", cert_hash);
 
@@ -286,14 +286,14 @@ impl DstackTDXVerifier {
             Some(event) => {
                 // event_payload is hex-encoded, decode it to get the cert hash string
                 let decoded = hex::decode(&event.event_payload).map_err(|e| {
-                    RatlsVerificationError::EventLogParse(format!(
+                    AtlsVerificationError::EventLogParse(format!(
                         "failed to hex-decode certificate event payload: {}",
                         e
                     ))
                 })?;
 
                 let eventlog_cert_hash = String::from_utf8(decoded).map_err(|e| {
-                    RatlsVerificationError::EventLogParse(format!(
+                    AtlsVerificationError::EventLogParse(format!(
                         "certificate event payload is not valid UTF-8: {}",
                         e
                     ))
@@ -317,12 +317,12 @@ impl DstackTDXVerifier {
     /// the cryptographically verified report.
     ///
     /// Fails if `app_compose` is not configured.
-    fn verify_app_compose(&self, events: &[EventLog]) -> Result<(), RatlsVerificationError> {
+    fn verify_app_compose(&self, events: &[EventLog]) -> Result<(), AtlsVerificationError> {
         let app_compose = self.config.app_compose.as_ref().ok_or_else(|| {
-            RatlsVerificationError::Configuration("app_compose is required".into())
+            AtlsVerificationError::Configuration("app_compose is required".into())
         })?;
         let expected = get_compose_hash(app_compose).map_err(|e| {
-            RatlsVerificationError::Configuration(format!(
+            AtlsVerificationError::Configuration(format!(
                 "Failed to serialize app_compose for hashing: {}",
                 e
             ))
@@ -336,7 +336,7 @@ impl DstackTDXVerifier {
             .iter()
             .find(|e| e.event == "compose-hash")
             .ok_or_else(|| {
-                RatlsVerificationError::AppComposeHashMismatch {
+                AtlsVerificationError::AppComposeHashMismatch {
                     expected: expected.clone(),
                     actual: "<not found in event log>".to_string(),
                 }
@@ -347,7 +347,7 @@ impl DstackTDXVerifier {
         debug!("App compose hash match: {}", eventlog_match);
 
         if !eventlog_match {
-            return Err(RatlsVerificationError::AppComposeHashMismatch {
+            return Err(AtlsVerificationError::AppComposeHashMismatch {
                 expected,
                 actual: event.event_payload.clone(),
             });
@@ -363,9 +363,9 @@ impl DstackTDXVerifier {
     /// the cryptographically verified report.
     ///
     /// Fails if `os_image_hash` is not configured.
-    fn verify_os_image_hash(&self, events: &[EventLog]) -> Result<(), RatlsVerificationError> {
+    fn verify_os_image_hash(&self, events: &[EventLog]) -> Result<(), AtlsVerificationError> {
         let expected = self.config.os_image_hash.as_ref().ok_or_else(|| {
-            RatlsVerificationError::Configuration("os_image_hash is required".into())
+            AtlsVerificationError::Configuration("os_image_hash is required".into())
         })?;
 
         debug!("Verifying OS image hash against trusted event log");
@@ -375,7 +375,7 @@ impl DstackTDXVerifier {
         let event = events
             .iter()
             .find(|e| e.event == "os-image-hash")
-            .ok_or_else(|| RatlsVerificationError::OsImageHashMismatch {
+            .ok_or_else(|| AtlsVerificationError::OsImageHashMismatch {
                 expected: expected.clone(),
                 actual: Some("<not found in event log>".to_string()),
             })?;
@@ -385,7 +385,7 @@ impl DstackTDXVerifier {
         debug!("OS image hash match: {}", eventlog_match);
 
         if !eventlog_match {
-            return Err(RatlsVerificationError::OsImageHashMismatch {
+            return Err(AtlsVerificationError::OsImageHashMismatch {
                 expected: expected.clone(),
                 actual: Some(event.event_payload.clone()),
             });
@@ -403,12 +403,12 @@ impl DstackTDXVerifier {
         &self,
         quote_response: &GetQuoteResponse,
         verified_report: &VerifiedReport,
-    ) -> Result<(), RatlsVerificationError> {
+    ) -> Result<(), AtlsVerificationError> {
         debug!("Verifying RTMR replay against verified report");
 
         // Get the trusted TD report from DCAP verification
         let td_report = verified_report.report.as_td10().ok_or_else(|| {
-            RatlsVerificationError::TeeTypeMismatch(
+            AtlsVerificationError::TeeTypeMismatch(
                 "expected TDX report but got SGX enclave report".into(),
             )
         })?;
@@ -416,7 +416,7 @@ impl DstackTDXVerifier {
         // Use dstack-sdk-types' built-in replay_rtmrs()
         let replayed: BTreeMap<u8, String> = quote_response
             .replay_rtmrs()
-            .map_err(RatlsVerificationError::Other)?;
+            .map_err(AtlsVerificationError::Other)?;
 
         // Get trusted RTMRs from verified report (as hex strings)
         let trusted_rtmrs = [
@@ -428,7 +428,7 @@ impl DstackTDXVerifier {
 
         for i in 0..4u8 {
             let replayed_rtmr = replayed.get(&i).cloned().ok_or_else(|| {
-                RatlsVerificationError::Quote(format!(
+                AtlsVerificationError::Quote(format!(
                     "RTMR{} missing from event log replay - malformed event log",
                     i
                 ))
@@ -442,7 +442,7 @@ impl DstackTDXVerifier {
             debug!("RTMR{} replay match: {}", i, rtmr_match);
 
             if !rtmr_match {
-                return Err(RatlsVerificationError::RtmrMismatch {
+                return Err(AtlsVerificationError::RtmrMismatch {
                     index: i,
                     expected: trusted_rtmrs[i as usize].clone(),
                     actual: replayed_rtmr,
@@ -462,12 +462,12 @@ impl DstackTDXVerifier {
         &self,
         report_data: &[u8; 64],
         verified_report: &VerifiedReport,
-    ) -> Result<(), RatlsVerificationError> {
+    ) -> Result<(), AtlsVerificationError> {
         debug!("Verifying report data (nonce) against verified report");
 
         // Get the trusted TD report from DCAP verification
         let td_report = verified_report.report.as_td10().ok_or_else(|| {
-            RatlsVerificationError::TeeTypeMismatch(
+            AtlsVerificationError::TeeTypeMismatch(
                 "expected TDX report but got SGX enclave report".into(),
             )
         })?;
@@ -479,7 +479,7 @@ impl DstackTDXVerifier {
         debug!("Report data actual:   {}", actual);
 
         if expected != actual {
-            return Err(RatlsVerificationError::ReportDataMismatch { expected, actual });
+            return Err(AtlsVerificationError::ReportDataMismatch { expected, actual });
         }
 
         debug!("Report data verification successful");
@@ -487,13 +487,13 @@ impl DstackTDXVerifier {
     }
 }
 
-impl RatlsVerifier for DstackTDXVerifier {
+impl AtlsVerifier for DstackTDXVerifier {
     async fn verify<S>(
         &self,
         stream: &mut S,
         peer_cert: &[u8],
         hostname: &str,
-    ) -> Result<Report, RatlsVerificationError>
+    ) -> Result<Report, AtlsVerificationError>
     where
         S: AsyncByteStream,
     {
@@ -508,21 +508,21 @@ impl RatlsVerifier for DstackTDXVerifier {
         debug!("Parsing event log");
         let events = quote_response
             .decode_event_log()
-            .map_err(|e| RatlsVerificationError::Other(e.into()))?;
+            .map_err(|e| AtlsVerificationError::Other(e.into()))?;
         debug!("Event log parsed, {} events found", events.len());
 
         // 3. Verify certificate in event log
         debug!("Verifying certificate in event log");
         let cert_in_eventlog = self.verify_cert_in_eventlog(peer_cert, &events)?;
         if !cert_in_eventlog {
-            return Err(RatlsVerificationError::CertificateNotInEventLog);
+            return Err(AtlsVerificationError::CertificateNotInEventLog);
         }
 
         // 4. Verify DCAP quote using dcap-qvl directly
         debug!("Decoding quote for DCAP verification");
         let quote_bytes = quote_response
             .decode_quote()
-            .map_err(|e| RatlsVerificationError::Other(anyhow::anyhow!("Failed to decode quote: {}", e)))?;
+            .map_err(|e| AtlsVerificationError::Other(anyhow::anyhow!("Failed to decode quote: {}", e)))?;
         debug!("Quote decoded ({} bytes)", quote_bytes.len());
 
         // Async quote verification - no blocking!
@@ -559,7 +559,7 @@ async fn get_quote_over_http<S>(
     stream: &mut S,
     report_data: &[u8; 64],
     hostname: &str,
-) -> Result<GetQuoteResponse, RatlsVerificationError>
+) -> Result<GetQuoteResponse, AtlsVerificationError>
 where
     S: AsyncByteStream,
 {
@@ -587,11 +587,11 @@ where
     stream
         .write_all(request.as_bytes())
         .await
-        .map_err(|e| RatlsVerificationError::Io(e.to_string()))?;
+        .map_err(|e| AtlsVerificationError::Io(e.to_string()))?;
     stream
         .flush()
         .await
-        .map_err(|e| RatlsVerificationError::Io(e.to_string()))?;
+        .map_err(|e| AtlsVerificationError::Io(e.to_string()))?;
 
     // Read HTTP response
     let mut response_buf = Vec::new();
@@ -602,7 +602,7 @@ where
         let n = stream
             .read(&mut chunk)
             .await
-            .map_err(|e| RatlsVerificationError::Io(e.to_string()))?;
+            .map_err(|e| AtlsVerificationError::Io(e.to_string()))?;
         if n == 0 {
             break;
         }
@@ -623,12 +623,12 @@ where
 
     // Parse HTTP response
     let body_start = find_http_body_start(&response_buf)
-        .ok_or_else(|| RatlsVerificationError::Io("Invalid HTTP response".into()))?;
+        .ok_or_else(|| AtlsVerificationError::Io("Invalid HTTP response".into()))?;
     let response_body = &response_buf[body_start..];
 
     let response: QuoteEndpointResponse = serde_json::from_slice(response_body)
         .map_err(|e| {
-            RatlsVerificationError::Quote(format!(
+            AtlsVerificationError::Quote(format!(
                 "Failed to parse /tdx_quote response: {}",
                 e
             ))

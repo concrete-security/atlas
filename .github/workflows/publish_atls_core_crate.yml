@@ -1,4 +1,4 @@
-name: Publish RATLS Core Crate
+name: Publish aTLS Core Crate
 
 on:
   workflow_dispatch:
@@ -27,7 +27,7 @@ jobs:
           cargo package
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: ratls-core-crate
+          name: atls-core-crate
           path: target/package/*.crate
       - name: generate hash
         id: hash
@@ -75,7 +75,7 @@ jobs:
         run: |
           VERSION=$(grep '^version = ' core/Cargo.toml | cut -d '"' -f2)
           export VERSION
-          TAG="ratls-core-v${VERSION}"
+          TAG="atls-core-v${VERSION}"
           export TAG
           echo "version: ${VERSION}"
           echo "tag: ${TAG}"

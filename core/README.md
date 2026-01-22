@@ -1,6 +1,6 @@
-# ratls-core
+# atls-core
 
-Rust library for Remote Attestation TLS (RATLS) verification. Verify that TLS servers are running inside Trusted Execution Environments (TEEs) like Intel TDX before sending sensitive data.
+Rust library for attested TLS (aTLS) verification. Verify that TLS servers are running inside Trusted Execution Environments (TEEs) like Intel TDX before sending sensitive data.
 
 ## Installation
 
@@ -8,7 +8,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-ratls-core = { git = "https://github.com/concrete-security/ratls", branch = "main" }
+atls-core = { git = "https://github.com/concrete-security/ratls", branch = "main" }
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
 ```
@@ -20,7 +20,7 @@ serde_json = "1"
 For development and testing, use `DstackTdxPolicy::dev()` which accepts more TCB statuses but still verifies the TEE:
 
 ```rust
-use ratls_core::{ratls_connect, Policy, DstackTdxPolicy};
+use atls_core::{atls_connect, Policy, DstackTdxPolicy};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -29,11 +29,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Development policy - relaxed TCB status, no bootchain verification
     let policy = Policy::DstackTdx(DstackTdxPolicy::dev());
 
-    let (mut tls_stream, report) = ratls_connect(tcp, "tee-server.example.com", policy, None).await?;
+    let (mut tls_stream, report) = atls_connect(tcp, "tee-server.example.com", policy, None).await?;
 
     // Access attestation report
     match &report {
-        ratls_core::Report::Tdx(tdx_report) => {
+        atls_core::Report::Tdx(tdx_report) => {
             println!("TEE verified! TCB Status: {}", tdx_report.status);
         }
     }
@@ -48,7 +48,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 For production, provide bootchain measurements and app configuration:
 
 ```rust
-use ratls_core::{ratls_connect, Policy, DstackTdxPolicy, ExpectedBootchain};
+use atls_core::{atls_connect, Policy, DstackTdxPolicy, ExpectedBootchain};
 use serde_json::json;
 
 #[tokio::main]
@@ -72,7 +72,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..Default::default()
     });
 
-    let (mut tls_stream, report) = ratls_connect(tcp, "vllm.concrete-security.com", policy, None).await?;
+    let (mut tls_stream, report) = atls_connect(tcp, "vllm.concrete-security.com", policy, None).await?;
 
     println!("TEE fully verified!");
 
@@ -86,7 +86,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 Policies can be loaded from JSON files:
 
 ```rust
-use ratls_core::{ratls_connect, Policy};
+use atls_core::{atls_connect, Policy};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -110,7 +110,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let policy: Policy = serde_json::from_str(policy_json)?;
 
     let tcp = tokio::net::TcpStream::connect("tee-server.example.com:443").await?;
-    let (tls_stream, report) = ratls_connect(tcp, "tee-server.example.com", policy, None).await?;
+    let (tls_stream, report) = atls_connect(tcp, "tee-server.example.com", policy, None).await?;
 
     Ok(())
 }
@@ -118,10 +118,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Low-Level API
 
-For custom TLS handling, use the `RatlsVerifier` trait directly:
+For custom TLS handling, use the `AtlsVerifier` trait directly:
 
 ```rust
-use ratls_core::{DstackTDXVerifier, RatlsVerifier, ExpectedBootchain};
+use atls_core::{DstackTDXVerifier, AtlsVerifier, ExpectedBootchain};
 use serde_json::json;
 
 #[tokio::main]
@@ -175,7 +175,7 @@ Policy fields vary by verifier implementation. The `Policy` enum wraps implement
 | `cache_collateral` | Cache Intel collateral (default: false) | No |
 
 ```rust
-use ratls_core::{Policy, DstackTdxPolicy, ExpectedBootchain};
+use atls_core::{Policy, DstackTdxPolicy, ExpectedBootchain};
 use serde_json::json;
 
 // Development policy - explicitly disables runtime verification
@@ -207,27 +207,27 @@ let invalid_policy = Policy::DstackTdx(DstackTdxPolicy::default());
 ## Error Handling
 
 ```rust
-use ratls_core::{ratls_connect, Policy, DstackTdxPolicy, RatlsVerificationError};
+use atls_core::{atls_connect, Policy, DstackTdxPolicy, AtlsVerificationError};
 
-async fn verify_tee() -> Result<(), RatlsVerificationError> {
+async fn verify_tee() -> Result<(), AtlsVerificationError> {
     let tcp = tokio::net::TcpStream::connect("tee.example.com:443")
         .await
-        .map_err(|e| RatlsVerificationError::Io(e.to_string()))?;
+        .map_err(|e| AtlsVerificationError::Io(e.to_string()))?;
 
     let policy = Policy::DstackTdx(DstackTdxPolicy::dev());
 
-    match ratls_connect(tcp, "tee.example.com", policy, None).await {
+    match atls_connect(tcp, "tee.example.com", policy, None).await {
         Ok((stream, report)) => {
             println!("Verification succeeded!");
             Ok(())
         }
-        Err(RatlsVerificationError::BootchainMismatch { field, expected, actual }) => {
+        Err(AtlsVerificationError::BootchainMismatch { field, expected, actual }) => {
             eprintln!("Bootchain mismatch in {}: expected {}, got {}", field, expected, actual);
-            Err(RatlsVerificationError::BootchainMismatch { field, expected, actual })
+            Err(AtlsVerificationError::BootchainMismatch { field, expected, actual })
         }
-        Err(RatlsVerificationError::TcbStatusNotAllowed { status, allowed }) => {
+        Err(AtlsVerificationError::TcbStatusNotAllowed { status, allowed }) => {
             eprintln!("TCB status {} not in allowed list {:?}", status, allowed);
-            Err(RatlsVerificationError::TcbStatusNotAllowed { status, allowed })
+            Err(AtlsVerificationError::TcbStatusNotAllowed { status, allowed })
         }
         Err(e) => Err(e),
     }

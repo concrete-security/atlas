@@ -1,14 +1,14 @@
 {
-  "name": "ratls-node",
+  "name": "atls-node",
   "version": "0.1.0",
-  "description": "RA-TLS client for Node.js - attested fetch for Trusted Execution Environments",
+  "description": "aTLS client for Node.js - attested fetch for Trusted Execution Environments",
   "type": "module",
-  "main": "./ratls-fetch.js",
-  "types": "./ratls-fetch.d.ts",
+  "main": "./atls-fetch.js",
+  "types": "./atls-fetch.d.ts",
   "exports": {
     ".": {
-      "types": "./ratls-fetch.d.ts",
-      "import": "./ratls-fetch.js"
+      "types": "./atls-fetch.d.ts",
+      "import": "./atls-fetch.js"
     },
     "./binding": {
       "types": "./index.d.ts",
@@ -16,7 +16,7 @@
     }
   },
   "napi": {
-    "name": "ratls-node",
+    "name": "atls-node",
     "triples": {
       "defaults": true,
       "additional": [
@@ -29,11 +29,11 @@
   "files": [
     "index.cjs",
     "index.d.ts",
-    "ratls-fetch.js",
-    "ratls-fetch.d.ts"
+    "atls-fetch.js",
+    "atls-fetch.d.ts"
   ],
   "keywords": [
-    "ratls",
+    "atls",
     "tee",
     "tdx",
     "sgx",
@@ -58,7 +58,7 @@
     "prepublishOnly": "napi prepublish -t npm",
     "artifacts": "napi artifacts",
     "test": "node test.mjs",
-    "universal": "napi universal -t @ratls-node"
+    "universal": "napi universal -t @atls-node"
   },
   "devDependencies": {
     "@ai-sdk/openai": "^2.0.76",

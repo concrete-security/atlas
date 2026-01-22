@@ -1,10 +1,10 @@
 /**
- * RATLS Node.js Tests
+ * aTLS Node.js Tests
  *
  * Run with: npm test
  */
 
-import { createRatlsAgent, createRatlsFetch, mergeWithDefaultAppCompose } from "./ratls-fetch.js"
+import { createAtlsAgent, createAtlsFetch, mergeWithDefaultAppCompose } from "./atls-fetch.js"
 import { createRequire } from "module"
 import { readFileSync } from "fs"
 import { dirname, join } from "path"
@@ -75,72 +75,72 @@ function assert(condition, message) {
 
 const tests = [
   test("Module imports successfully", async () => {
-    assert(typeof createRatlsAgent === "function", "createRatlsAgent not exported")
-    assert(typeof createRatlsFetch === "function", "createRatlsFetch not exported")
+    assert(typeof createAtlsAgent === "function", "createAtlsAgent not exported")
+    assert(typeof createAtlsFetch === "function", "createAtlsFetch not exported")
     assert(typeof mergeWithDefaultAppCompose === "function", "mergeWithDefaultAppCompose not exported")
   }),
 
   test("Native binding loads", async () => {
     assert(binding, "Binding not loaded")
-    assert(typeof binding.ratlsConnect === "function", "ratlsConnect function not available")
+    assert(typeof binding.atlsConnect === "function", "atlsConnect function not available")
     assert(typeof binding.mergeWithDefaultAppCompose === "function", "mergeWithDefaultAppCompose function not available")
   }),
 
   test("Socket API available", async () => {
-    assert(typeof binding.ratlsConnect === "function", "ratlsConnect not available")
+    assert(typeof binding.atlsConnect === "function", "atlsConnect not available")
     assert(typeof binding.socketRead === "function", "socketRead not available")
     assert(typeof binding.socketWrite === "function", "socketWrite not available")
     assert(typeof binding.socketClose === "function", "socketClose not available")
     assert(typeof binding.socketDestroy === "function", "socketDestroy not available")
   }),
 
-  test("createRatlsFetch requires policy", async () => {
+  test("createAtlsFetch requires policy", async () => {
     try {
-      createRatlsFetch({ target: "example.com" })
+      createAtlsFetch({ target: "example.com" })
       throw new Error("Should have thrown")
     } catch (err) {
       assert(err.message.includes("policy is required"), `Expected policy error, got: ${err.message}`)
     }
   }),
 
-  test("createRatlsFetch rejects string shorthand", async () => {
+  test("createAtlsFetch rejects string shorthand", async () => {
     try {
-      createRatlsFetch("example.com")
+      createAtlsFetch("example.com")
       throw new Error("Should have thrown")
     } catch (err) {
       assert(err.message.includes("String shorthand no longer supported"), `Expected string error, got: ${err.message}`)
     }
   }),
 
-  test("createRatlsAgent requires policy", async () => {
+  test("createAtlsAgent requires policy", async () => {
     try {
-      createRatlsAgent({ target: "example.com" })
+      createAtlsAgent({ target: "example.com" })
       throw new Error("Should have thrown")
     } catch (err) {
       assert(err.message.includes("policy is required"), `Expected policy error, got: ${err.message}`)
     }
   }),
 
-  test("createRatlsAgent rejects string shorthand", async () => {
+  test("createAtlsAgent rejects string shorthand", async () => {
     try {
-      createRatlsAgent("example.com")
+      createAtlsAgent("example.com")
       throw new Error("Should have thrown")
     } catch (err) {
       assert(err.message.includes("String shorthand no longer supported"), `Expected string error, got: ${err.message}`)
     }
   }),
 
-  test("createRatlsAgent error handling - missing target", async () => {
+  test("createAtlsAgent error handling - missing target", async () => {
     try {
-      createRatlsAgent({ policy: DEV_POLICY })
+      createAtlsAgent({ policy: DEV_POLICY })
       throw new Error("Should have thrown error for missing target")
     } catch (err) {
       assert(err.message.includes("target is required"), `Wrong error: ${err.message}`)
     }
   }),
 
-  test("createRatlsAgent with valid options", async () => {
-    const agent = createRatlsAgent({
+  test("createAtlsAgent with valid options", async () => {
+    const agent = createAtlsAgent({
       target: "example.com:443",
       policy: DEV_POLICY,
       onAttestation: (att) => {}
@@ -149,8 +149,8 @@ const tests = [
     assert(typeof agent.createConnection === "function", "Agent missing createConnection method")
   }),
 
-  test("createRatlsAgent with serverName override", async () => {
-    const agent = createRatlsAgent({
+  test("createAtlsAgent with serverName override", async () => {
+    const agent = createAtlsAgent({
       target: "10.0.0.1:443",
       serverName: "example.com",
       policy: DEV_POLICY
@@ -158,8 +158,8 @@ const tests = [
     assert(typeof agent === "object", "Agent not an object")
   }),
 
-  test("createRatlsFetch with valid options", async () => {
-    const fetch = createRatlsFetch({
+  test("createAtlsFetch with valid options", async () => {
+    const fetch = createAtlsFetch({
       target: "example.com:443",
       policy: DEV_POLICY,
       onAttestation: (att) => {}
@@ -167,8 +167,8 @@ const tests = [
     assert(typeof fetch === "function", "Fetch not a function")
   }),
 
-  test("createRatlsFetch returns promises", async () => {
-    const fetch = createRatlsFetch({
+  test("createAtlsFetch returns promises", async () => {
+    const fetch = createAtlsFetch({
       target: "example.com",
       policy: DEV_POLICY
     })
@@ -210,14 +210,14 @@ const tests = [
   }),
 
   test("Main entry point exports high-level API", async () => {
-    const mainExports = await import("./ratls-fetch.js")
-    assert(typeof mainExports.createRatlsFetch === "function", "createRatlsFetch not exported")
-    assert(typeof mainExports.createRatlsAgent === "function", "createRatlsAgent not exported")
+    const mainExports = await import("./atls-fetch.js")
+    assert(typeof mainExports.createAtlsFetch === "function", "createAtlsFetch not exported")
+    assert(typeof mainExports.createAtlsAgent === "function", "createAtlsAgent not exported")
     assert(typeof mainExports.mergeWithDefaultAppCompose === "function", "mergeWithDefaultAppCompose not exported")
   }),
 
   test("full verification against vllm.concrete-security.com", async () => {
-    const fetch = createRatlsFetch({
+    const fetch = createAtlsFetch({
       target: "vllm.concrete-security.com",
       policy: VLLM_POLICY,
       onAttestation: (att) => {
@@ -243,7 +243,7 @@ const tests = [
 // ============================================================================
 
 async function main() {
-  console.log("RATLS Node.js Tests\n")
+  console.log("aTLS Node.js Tests\n")
   console.log("================================\n")
 
   for (const runTest of tests) {

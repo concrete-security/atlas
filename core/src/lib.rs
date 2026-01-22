@@ -1,15 +1,15 @@
-//! RATLS Verifier Library
+//! aTLS Verifier Library
 //!
-//! This library provides verifier implementations for Remote Attestation TLS (RATLS).
+//! This library provides verifier implementations for Attested TLS (aTLS).
 //!
 //! # Overview
 //!
 //! The library provides two ways to verify TEE attestation:
 //!
-//! 1. **High-level API**: Use [`ratls_connect`] to establish a TLS connection with
+//! 1. **High-level API**: Use [`atls_connect`] to establish a TLS connection with
 //!    attestation verification in a single call.
 //!
-//! 2. **Low-level API**: Use the [`RatlsVerifier`] trait directly for custom TLS handling.
+//! 2. **Low-level API**: Use the [`AtlsVerifier`] trait directly for custom TLS handling.
 //!
 //! # Features
 //!
@@ -21,22 +21,22 @@
 //! - **Certificate Binding**: Verify TLS certificate is bound to the TEE
 //!
 //! For architecture details and how to extend with new TEE verifiers, see
-//! [ARCHITECTURE.md](https://github.com/anthropics/ratls/blob/main/core/ARCHITECTURE.md).
+//! [ARCHITECTURE.md](https://github.com/anthropics/atls/blob/main/core/ARCHITECTURE.md).
 //!
 //! # High-Level Example
 //!
 //! ```no_run
-//! use ratls_core::{ratls_connect, Policy, DstackTdxPolicy};
+//! use atls_core::{atls_connect, Policy, DstackTdxPolicy};
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! // Connect with development policy (relaxed TCB status)
 //! let tcp = tokio::net::TcpStream::connect("tee.example.com:443").await?;
 //! let policy = Policy::DstackTdx(DstackTdxPolicy::dev());
-//! let (tls_stream, report) = ratls_connect(tcp, "tee.example.com", policy, None).await?;
+//! let (tls_stream, report) = atls_connect(tcp, "tee.example.com", policy, None).await?;
 //!
 //! // Access report data via pattern matching
 //! match &report {
-//!     ratls_core::Report::Tdx(tdx_report) => {
+//!     atls_core::Report::Tdx(tdx_report) => {
 //!         println!("TCB Status: {}", tdx_report.status);
 //!     }
 //! }
@@ -47,8 +47,8 @@
 //! # Low-Level Example
 //!
 //! ```no_run
-//! use ratls_core::{DstackTDXVerifier, RatlsVerifier};
-//! use ratls_core::tdx::ExpectedBootchain;
+//! use atls_core::{DstackTDXVerifier, AtlsVerifier};
+//! use atls_core::tdx::ExpectedBootchain;
 //! use serde_json::json;
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
@@ -72,7 +72,7 @@
 //! # let peer_cert: Vec<u8> = todo!();
 //! let report = verifier.verify(&mut tls_stream, &peer_cert, "hostname").await?;
 //! match &report {
-//!     ratls_core::Report::Tdx(tdx_report) => {
+//!     atls_core::Report::Tdx(tdx_report) => {
 //!         println!("TCB Status: {}", tdx_report.status);
 //!     }
 //! }
@@ -89,7 +89,7 @@ pub mod tdx;
 pub mod verifier;
 
 // High-level API
-pub use connect::{ratls_connect, TlsStream};
+pub use connect::{atls_connect, TlsStream};
 pub use policy::Policy;
 
 // Dstack-specific (backward compatible re-exports)
@@ -100,9 +100,9 @@ pub use dstack::{DstackTDXVerifier, DstackTDXVerifierBuilder, DstackTDXVerifierC
 pub use tdx::{ExpectedBootchain, TCB_STATUS_LIST};
 
 // Low-level API
-pub use error::RatlsVerificationError;
+pub use error::AtlsVerificationError;
 pub use verifier::{
-    AsyncByteStream, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, IntoVerifier, RatlsVerifier,
+    AsyncByteStream, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, IntoVerifier, AtlsVerifier,
     Report, Verifier,
 };
 
