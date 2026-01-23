@@ -335,10 +335,29 @@ mod integration {
         let result1 = verifier.verify(&mut stream1, &peer_cert1, TEST_HOST).await;
         assert!(result1.is_ok(), "First verification failed: {:?}", result1.err());
 
-        // Second verification (should use cached collateral)
-        let (mut stream2, peer_cert2) = connect_tls(TEST_HOST).await.expect("Failed to connect TLS (2)");
-        let result2 = verifier.verify(&mut stream2, &peer_cert2, TEST_HOST).await;
-        assert!(result2.is_ok(), "Second verification failed: {:?}", result2.err());
+        // Small delay between verifications to avoid rate limiting on the TEE quote endpoint
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        // Second verification (should use cached collateral) - with retry for transient errors
+        let mut result2 = None;
+        for attempt in 1..=3 {
+            let (mut stream2, peer_cert2) = connect_tls(TEST_HOST).await.expect("Failed to connect TLS (2)");
+            match verifier.verify(&mut stream2, &peer_cert2, TEST_HOST).await {
+                Ok(report) => {
+                    result2 = Some(Ok(report));
+                    break;
+                }
+                Err(e) => {
+                    if attempt < 3 {
+                        eprintln!("Second verification attempt {} failed, retrying: {:?}", attempt, e);
+                        tokio::time::sleep(std::time::Duration::from_millis(500 * attempt as u64)).await;
+                    } else {
+                        result2 = Some(Err(e));
+                    }
+                }
+            }
+        }
+        assert!(result2.unwrap().is_ok(), "Second verification failed after retries");
 
         println!("Multiple verifications with same verifier instance passed!");
     }
@@ -361,10 +380,29 @@ mod integration {
         let result1 = verifier.verify(&mut stream1, &peer_cert1, TEST_HOST).await;
         assert!(result1.is_ok(), "First verification failed: {:?}", result1.err());
 
-        // Second verification - uses cached collateral
-        let (mut stream2, peer_cert2) = connect_tls(TEST_HOST).await.expect("Failed to connect TLS (2)");
-        let result2 = verifier.verify(&mut stream2, &peer_cert2, TEST_HOST).await;
-        assert!(result2.is_ok(), "Second verification (cached) failed: {:?}", result2.err());
+        // Small delay between verifications to avoid rate limiting on the TEE quote endpoint
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        // Second verification - uses cached collateral (with retry for transient errors)
+        let mut result2 = None;
+        for attempt in 1..=3 {
+            let (mut stream2, peer_cert2) = connect_tls(TEST_HOST).await.expect("Failed to connect TLS (2)");
+            match verifier.verify(&mut stream2, &peer_cert2, TEST_HOST).await {
+                Ok(report) => {
+                    result2 = Some(Ok(report));
+                    break;
+                }
+                Err(e) => {
+                    if attempt < 3 {
+                        eprintln!("Second verification attempt {} failed, retrying: {:?}", attempt, e);
+                        tokio::time::sleep(std::time::Duration::from_millis(500 * attempt as u64)).await;
+                    } else {
+                        result2 = Some(Err(e));
+                    }
+                }
+            }
+        }
+        assert!(result2.unwrap().is_ok(), "Second verification (cached) failed after retries");
 
         println!("Collateral caching test passed!");
     }
