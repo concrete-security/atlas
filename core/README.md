@@ -8,7 +8,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-atls-core = { git = "https://github.com/concrete-security/ratls", branch = "main" }
+atls-core = { git = "https://github.com/concrete-security/atlas", branch = "main" }
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
 ```
