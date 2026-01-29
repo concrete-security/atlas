@@ -1,0 +1,21 @@
+{
+  "name": "@concrete-security/atlas-wasm",
+  "version": "0.2.0",
+  "description": "aTLS client for browsers - attested fetch for Trusted Execution Environments",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/concrete-security/atlas",
+    "directory": "wasm"
+  },
+  "keywords": [
+    "atls",
+    "tee",
+    "tdx",
+    "sgx",
+    "attestation",
+    "wasm",
+    "fetch",
+    "confidential-computing"
+  ],
+  "license": "MIT"
+}

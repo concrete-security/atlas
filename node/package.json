@@ -1,5 +1,5 @@
 {
-  "name": "atls-node",
+  "name": "@concrete-security/atlas-node",
   "version": "0.1.0",
   "description": "aTLS client for Node.js - attested fetch for Trusted Execution Environments",
   "type": "module",
@@ -17,12 +17,16 @@
   },
   "napi": {
     "name": "atls-node",
+    "package": {
+      "name": "@concrete-security/atlas-node"
+    },
     "triples": {
       "defaults": true,
       "additional": [
         "aarch64-apple-darwin",
         "aarch64-unknown-linux-gnu",
-        "aarch64-unknown-linux-musl"
+        "aarch64-unknown-linux-musl",
+        "aarch64-pc-windows-msvc"
       ]
     }
   },
@@ -48,7 +52,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/zama-ai/secure-chat",
+    "url": "https://github.com/concrete-security/atlas",
     "directory": "node"
   },
   "license": "MIT",

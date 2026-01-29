@@ -1,44 +1,55 @@
+# Publish @concrete-security/atlas-node to npm
+#
+# How to release:
+#   1. Update version in node/package.json
+#   2. Commit and push the change
+#   3. Run this workflow with dry_run=false
+#
+# The workflow will:
+#   - Build for all platforms
+#   - Create git tag: node/<version>
+#   - Create draft GitHub release
+#   - Publish to npm
+
 name: Publish Node Package
 
 on:
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
     inputs:
       dry_run:
-        description: 'Dry run (skip npm publish)'
+        description: 'Dry run (skip npm publish and release)'
         type: boolean
         default: true
 
 env:
+  MACOSX_DEPLOYMENT_TARGET: '10.13'
   CARGO_INCREMENTAL: 0
 
 jobs:
   build:
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: macos-latest
-            target: x86_64-apple-darwin
-          - os: macos-latest
-            target: aarch64-apple-darwin
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-musl
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-musl
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-
-    runs-on: ${{ matrix.os }}
-    defaults:
-      run:
-        working-directory: node
+          # Linux GNU targets use --use-napi-cross
+          - target: x86_64-unknown-linux-gnu
+            build_flags: "--use-napi-cross"
+          - target: aarch64-unknown-linux-gnu
+            build_flags: "--use-napi-cross"
+          # All others use -x (zigbuild/xwin)
+          - target: x86_64-apple-darwin
+            build_flags: "-x"
+          - target: aarch64-apple-darwin
+            build_flags: "-x"
+          - target: x86_64-pc-windows-msvc
+            build_flags: "-x"
+          - target: aarch64-pc-windows-msvc
+            build_flags: "-x"
+          - target: x86_64-unknown-linux-musl
+            build_flags: "-x"
+          - target: aarch64-unknown-linux-musl
+            build_flags: "-x"
     steps:
       - uses: actions/checkout@v4
 
@@ -53,44 +64,41 @@ jobs:
           version: 10
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          source "$HOME/.cargo/env"
+          rustup target add ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: actions/cache@v4
         with:
-          targets: ${{ matrix.target }}
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            ~/.xwin
+          key: ${{ runner.os }}-cargo-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install cross-compilation tools
+        run: |
+          cargo install cargo-zigbuild --locked || true
+          cargo install cargo-xwin --locked || true
+
+      - name: Setup zig
+        run: |
+          ZIG_VERSION="0.13.0"
+          curl -sSfL "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz" | tar -xJ
+          echo "${PWD}/zig-linux-x86_64-${ZIG_VERSION}" >> $GITHUB_PATH
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+        working-directory: node
 
-      - name: Install Linux dependencies
-        if: ${{ runner.os == 'Linux' }}
-        shell: bash
-        run: |
-          sudo apt-get update
-          pkgs=()
-          if [[ "${{ matrix.target }}" == aarch64-unknown-linux-* ]]; then
-            pkgs+=("gcc-aarch64-linux-gnu")
-          fi
-          if [[ "${{ matrix.target }}" == *-unknown-linux-musl ]]; then
-            pkgs+=("musl-tools")
-          fi
-          if [ ${#pkgs[@]} -gt 0 ]; then
-            sudo apt-get install -y "${pkgs[@]}"
-          fi
-
-      - name: Build native module
-        shell: bash
-        run: pnpm build --target ${{ matrix.target }}
-
-      - name: Strip native module
-        if: ${{ runner.os != 'Windows' }}
-        shell: bash
-        run: |
-          if [[ "$RUNNER_OS" == "macOS" ]]; then
-            strip -x *.node
-          elif [[ "${{ matrix.target }}" == aarch64-unknown-linux-* ]]; then
-            aarch64-linux-gnu-strip *.node
-          else
-            strip *.node
-          fi
+      - name: Build
+        run: pnpm build --target ${{ matrix.target }} ${{ matrix.build_flags }}
+        working-directory: node
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -100,8 +108,10 @@ jobs:
           if-no-files-found: error
 
   publish:
-    needs: build
+    needs: [build]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     defaults:
       run:
         working-directory: node
@@ -133,25 +143,39 @@ jobs:
       - name: List packages
         run: ls -la npm/
 
-      - name: Publish (dry run)
-        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run != 'false' }}
+      - name: Dry run
+        if: ${{ inputs.dry_run }}
         run: |
-          echo "Dry run - would publish these packages:"
-          ls -la npm/
+          echo "Dry run - would publish:"
+          for dir in npm/*/; do
+            echo "  - $dir"
+            cat "$dir/package.json" | grep -E '"name"|"version"'
+          done
           echo "Main package:"
           cat package.json | grep -E '"name"|"version"'
 
       - name: Publish to npm
-        if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'false') }}
+        if: ${{ !inputs.dry_run }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          for dir in npm/*/; do
-            if [ -d "$dir" ]; then
-              echo "Publishing $dir"
-              cd "$dir"
-              npm publish --access public
-              cd ../..
-            fi
-          done
+          find npm -maxdepth 1 -type d -mindepth 1 -exec npm publish --access public {} \;
           npm publish --access public
+
+      - name: Create draft release
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=$(jq -r '.version' package.json)
+          TAG="node/${VERSION}"
+          echo "version: ${VERSION}"
+          echo "tag: ${TAG}"
+
+          git tag "$TAG"
+          git push origin "$TAG"
+
+          gh release create --draft --repo ${{ github.repository }} \
+            --verify-tag "$TAG" \
+            --title "atlas-node v${VERSION}" \
+            --notes "Published @concrete-security/atlas-node@${VERSION} to npm"
