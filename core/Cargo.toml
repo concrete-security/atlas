@@ -44,6 +44,8 @@ getrandom = { version = "0.2", features = ["js"] }
 futures = { version = "0.3", features = ["std"] }
 rustls = { version = "0.23", default-features = false, features = ["logging", "std", "tls12", "ring"] }
 futures-rustls = { version = "0.26", default-features = false, features = ["ring"] }
+# Ring needs explicit WASM feature for wasm32 targets
+ring = { version = "0.17", features = ["wasm32_unknown_unknown_js"] }
 js-sys = "0.3"
 console_log = "1"
 

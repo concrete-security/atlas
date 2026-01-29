@@ -16,6 +16,8 @@ debug-logging = ["atlas-core/debug-logging"]
 atlas-core = { path = "../core" }
 futures = "0.3"
 wasm-bindgen = "0.2"
+# Ring needs explicit WASM feature for wasm32 targets
+ring = { version = "0.17", features = ["wasm32_unknown_unknown_js"] }
 wasm-bindgen-futures = "0.4"
 serde = { workspace = true }
 serde-wasm-bindgen = "0.6"
