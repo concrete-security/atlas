@@ -1,4 +1,5 @@
 {
+  "TODO": "see https://www.npmjs.com/package/@concrete-security/atlas-wasm?activeTab=code",
   "name": "@concrete-security/atlas-wasm",
   "version": "0.2.0",
   "description": "aTLS client for browsers - attested fetch for Trusted Execution Environments",

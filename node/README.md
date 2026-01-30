@@ -1,22 +1,22 @@
-# atlas-node
+# @concrete-security/atlas-node
 
 Attested TLS connections for Node.js. Connect securely to Trusted Execution Environments (TEEs) with cryptographic proof of their integrity.
 
 ## Installation
 
 ```bash
-npm install atlas-node
+npm install @concrete-security/atlas-node
 ```
 
 Prebuilt binaries are included for:
 - macOS (x64, arm64)
-- Linux (x64, arm64) with glibc or musl
-- Windows (x64)
+- Linux (x64, arm64)
+- Windows (x64, arm64)
 
 ## Quick Start
 
 ```typescript
-import { createAtlsFetch } from "atlas-node"
+import { createAtlsFetch } from "@concrete-security/atlas-node"
 
 const fetch = createAtlsFetch("enclave.example.com")
 const response = await fetch("/api/secure-data")
@@ -30,7 +30,7 @@ console.log(response.attestation.teeType)  // "tdx"
 Connect to LLM inference servers running in TEEs (vLLM, etc.):
 
 ```typescript
-import { createAtlsFetch } from "atlas-node"
+import { createAtlsFetch } from "@concrete-security/atlas-node"
 import { createOpenAI } from "@ai-sdk/openai"
 import { streamText } from "ai"
 
@@ -94,7 +94,7 @@ const fetch = createAtlsFetch({
 For use with `https.request`, axios, or other HTTP clients:
 
 ```typescript
-import { createAtlsAgent } from "atlas-node"
+import { createAtlsAgent } from "@concrete-security/atlas-node"
 import https from "https"
 
 const agent = createAtlsAgent({
@@ -179,20 +179,32 @@ pnpm build:debug    # Build for current platform (debug)
 
 The package uses [@napi-rs/cli](https://napi.rs) for cross-platform native module distribution.
 
+### Version Management
+
+All package versions (main package, platform packages, and optionalDependencies) must stay in sync. Use the version sync script:
+
+```bash
+cd node
+pnpm sync-versions 0.2.0
+```
+
+This updates:
+- Main `package.json` version
+- All `optionalDependencies` versions in main package
+- All platform package versions in `npm/*/package.json`
+
 ### Automated Publishing (CI)
 
 1. Add `NPM_TOKEN` secret to your GitHub repository settings
-2. Create and push a version tag:
-
-```bash
-git tag v0.1.0
-git push --tags
-```
+2. Update versions using `pnpm sync-versions <version>`
+3. Commit and push the change
+4. Run the "Publish Node Package" workflow with `dry_run: false`
 
 The GitHub Actions workflow will:
-- Build native binaries for all platforms (macOS, Linux, Windows)
-- Publish platform-specific packages (`@atlas-node/darwin-arm64`, etc.)
-- Publish the main `atlas-node` package
+- Build native binaries for all 6 platforms
+- Publish platform-specific packages
+- Publish the main `@concrete-security/atlas-node` package
+- Create a git tag `node/<version>` and draft GitHub release
 
 ### Manual Publishing
 
@@ -212,13 +224,12 @@ The main package has optional dependencies on platform-specific packages:
 
 | Package | Platform |
 |---------|----------|
-| `@atlas-node/darwin-arm64` | macOS Apple Silicon |
-| `@atlas-node/darwin-x64` | macOS Intel |
-| `@atlas-node/linux-x64-gnu` | Linux x64 (glibc) |
-| `@atlas-node/linux-x64-musl` | Linux x64 (musl/Alpine) |
-| `@atlas-node/linux-arm64-gnu` | Linux ARM64 (glibc) |
-| `@atlas-node/linux-arm64-musl` | Linux ARM64 (musl/Alpine) |
-| `@atlas-node/win32-x64-msvc` | Windows x64 |
+| `@concrete-security/atlas-node-darwin-arm64` | macOS Apple Silicon |
+| `@concrete-security/atlas-node-darwin-x64` | macOS Intel |
+| `@concrete-security/atlas-node-linux-x64-gnu` | Linux x64 |
+| `@concrete-security/atlas-node-linux-arm64-gnu` | Linux ARM64 |
+| `@concrete-security/atlas-node-win32-x64-msvc` | Windows x64 |
+| `@concrete-security/atlas-node-win32-arm64-msvc` | Windows ARM64 |
 
 ## How It Works
 
@@ -235,7 +246,7 @@ All verification happens automatically on each request. The attestation result i
 Full TypeScript definitions are included:
 
 ```typescript
-import { createAtlsFetch, AtlsFetch, AtlsAttestation, AtlsResponse } from "atlas-node"
+import { createAtlsFetch, AtlsFetch, AtlsAttestation, AtlsResponse } from "@concrete-security/atlas-node"
 
 const fetch: AtlsFetch = createAtlsFetch("enclave.example.com")
 

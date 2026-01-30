@@ -11,7 +11,7 @@ import { dirname, join } from "path"
 import { fileURLToPath } from "url"
 
 const require = createRequire(import.meta.url)
-const binding = require("./index.cjs")
+const binding = require("./index.js")
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 

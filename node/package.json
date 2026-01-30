@@ -12,7 +12,7 @@
     },
     "./binding": {
       "types": "./index.d.ts",
-      "require": "./index.cjs"
+      "default": "./index.js"
     }
   },
   "napi": {
@@ -25,13 +25,12 @@
       "additional": [
         "aarch64-apple-darwin",
         "aarch64-unknown-linux-gnu",
-        "aarch64-unknown-linux-musl",
         "aarch64-pc-windows-msvc"
       ]
     }
   },
   "files": [
-    "index.cjs",
+    "index.js",
     "index.d.ts",
     "atls-fetch.js",
     "atls-fetch.d.ts"
@@ -57,12 +56,12 @@
   },
   "license": "MIT",
   "scripts": {
-    "build": "bash -c 'napi build --platform --release \"$@\" && mv index.js index.cjs 2>/dev/null || true' --",
-    "build:debug": "bash -c 'napi build --platform \"$@\" && mv index.js index.cjs 2>/dev/null || true' --",
+    "build": "napi build --platform --release",
+    "build:debug": "napi build --platform",
     "prepublishOnly": "napi prepublish -t npm",
     "artifacts": "napi artifacts",
     "test": "node test.mjs",
-    "universal": "napi universal -t @atlas-node"
+    "sync-versions": "node scripts/sync-versions.mjs"
   },
   "devDependencies": {
     "@ai-sdk/openai": "^2.0.76",
@@ -70,6 +69,14 @@
     "ai": "^5.0.106",
     "ws": "^8.18.3",
     "zod": "^4.1.13"
+  },
+  "optionalDependencies": {
+    "@concrete-security/atlas-node-darwin-arm64": "0.1.0",
+    "@concrete-security/atlas-node-darwin-x64": "0.1.0",
+    "@concrete-security/atlas-node-linux-x64-gnu": "0.1.0",
+    "@concrete-security/atlas-node-linux-arm64-gnu": "0.1.0",
+    "@concrete-security/atlas-node-win32-x64-msvc": "0.1.0",
+    "@concrete-security/atlas-node-win32-arm64-msvc": "0.1.0"
   },
   "packageManager": "pnpm@10.15.1+sha512.34e538c329b5553014ca8e8f4535997f96180a1d0f614339357449935350d924e22f8614682191264ec33d1462ac21561aff97f6bb18065351c162c7e8f6de67"
 }
