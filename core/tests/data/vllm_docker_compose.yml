@@ -77,13 +77,13 @@ services:
 
   # TDX Attestation service
   attestation-service:
-    image: ghcr.io/concrete-security/attestation-service@sha256:af5c345b129891104a17fa7068ae81077480223b996a29f0dd8c2719615a7428
+    image: ghcr.io/concrete-security/attestation-service@sha256:e409b2b664f104382d20dab00ab6b130aa698dbf0cb2bf47d181cd480d113a99
     container_name: attestation-service
     environment:
       - HOST=0.0.0.0
       - PORT=8080
       # Keep it to 1 if you want replication at the container orchestration level (see deploy.replicas)
-      - WORKERS=1
+      - WORKERS=8
       # Shared secret for EKM header HMAC validation (must match nginx)
       - EKM_SHARED_SECRET=${EKM_SHARED_SECRET}
     volumes:
