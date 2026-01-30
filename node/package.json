@@ -12,7 +12,7 @@
     },
     "./binding": {
       "types": "./index.d.ts",
-      "default": "./index.js"
+      "default": "./index.cjs"
     }
   },
   "napi": {
@@ -30,7 +30,7 @@
     }
   },
   "files": [
-    "index.js",
+    "index.cjs",
     "index.d.ts",
     "atls-fetch.js",
     "atls-fetch.d.ts"
@@ -56,8 +56,8 @@
   },
   "license": "MIT",
   "scripts": {
-    "build": "napi build --platform --release",
-    "build:debug": "napi build --platform",
+    "build": "napi build  --js index.cjs --platform --release",
+    "build:debug": "napi build --js index.cjs --platform",
     "prepublishOnly": "napi prepublish -t npm",
     "artifacts": "napi artifacts",
     "test": "node test.mjs",
