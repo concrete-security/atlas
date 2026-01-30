@@ -204,6 +204,24 @@ pub fn socket_destroy(socket_id: u32) -> napi::Result<()> {
     Ok(())
 }
 
+/// Close all open sockets - call before process exit for graceful cleanup.
+///
+/// This closes all open TLS connections and releases resources held by the
+/// native binding. Call this before process.exit() to ensure clean shutdown.
+#[napi(js_name = "closeAllSockets")]
+pub async fn close_all_sockets() -> napi::Result<()> {
+    let mut guard = SOCKETS.lock().await;
+
+    // Close all sockets gracefully
+    for (_, state) in guard.drain() {
+        let mut writer = state.writer.lock().await;
+        let _ = writer.flush().await;
+        let _ = writer.shutdown().await;
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

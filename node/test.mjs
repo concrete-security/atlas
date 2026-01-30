@@ -92,6 +92,7 @@ const tests = [
     assert(typeof binding.socketWrite === "function", "socketWrite not available")
     assert(typeof binding.socketClose === "function", "socketClose not available")
     assert(typeof binding.socketDestroy === "function", "socketDestroy not available")
+    assert(typeof binding.closeAllSockets === "function", "closeAllSockets not available")
   }),
 
   test("createAtlsFetch requires policy", async () => {
@@ -253,9 +254,10 @@ async function main() {
   console.log("\n================================")
   console.log(`Results: ${passed} passed, ${failed} failed`)
 
-  if (failed > 0) {
-    process.exit(1)
-  }
+  // Gracefully close all sockets before exiting
+  await binding.closeAllSockets()
+
+  process.exit(failed > 0 ? 1 : 0)
 }
 
 main().catch(err => {

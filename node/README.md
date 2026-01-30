@@ -231,6 +231,23 @@ The main package has optional dependencies on platform-specific packages:
 | `@concrete-security/atlas-node-win32-x64-msvc` | Windows x64 |
 | `@concrete-security/atlas-node-win32-arm64-msvc` | Windows ARM64 |
 
+## Resource Cleanup
+
+For long-running processes or graceful shutdown, call `closeAllSockets()` to close all open TLS connections:
+
+```typescript
+import { closeAllSockets } from "@concrete-security/atlas-node/binding"
+
+// Before process exit
+await closeAllSockets()
+process.exit(0)
+```
+
+This is recommended for:
+- Server processes with graceful shutdown handlers
+- Test suites
+- CLI tools that need clean exit
+
 ## How It Works
 
 1. **Direct TCP Connection** - Connects directly to the TEE endpoint (no proxy needed)

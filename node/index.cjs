@@ -310,7 +310,7 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { mergeWithDefaultAppCompose, atlsConnect, socketRead, socketWrite, socketClose, socketDestroy } = nativeBinding
+const { mergeWithDefaultAppCompose, atlsConnect, socketRead, socketWrite, socketClose, socketDestroy, closeAllSockets } = nativeBinding
 
 module.exports.mergeWithDefaultAppCompose = mergeWithDefaultAppCompose
 module.exports.atlsConnect = atlsConnect
@@ -318,3 +318,4 @@ module.exports.socketRead = socketRead
 module.exports.socketWrite = socketWrite
 module.exports.socketClose = socketClose
 module.exports.socketDestroy = socketDestroy
+module.exports.closeAllSockets = closeAllSockets
