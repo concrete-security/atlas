@@ -58,9 +58,11 @@ jobs:
         uses: pnpm/action-setup@v4
         with:
           version: 10
-      - name: Install node dependencies
+      - name: Install napi-rs cli
         working-directory: node
-        run: pnpm install --frozen-lockfile
+        run: |
+          NAPI_VERSION=$(node -p "require('./package.json').devDependencies['@napi-rs/cli']")
+          pnpm add @napi-rs/cli@$NAPI_VERSION
       - name: Build native module
         working-directory: node
         run: pnpm build
