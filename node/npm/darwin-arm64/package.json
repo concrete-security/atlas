@@ -1,0 +1,24 @@
+{
+  "name": "@concrete-security/atlas-node-darwin-arm64",
+  "version": "0.1.0",
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "main": "atlas-node.darwin-arm64.node",
+  "files": [
+    "atlas-node.darwin-arm64.node"
+  ],
+  "description": "macOS arm64 binary for @concrete-security/atlas-node",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/concrete-security/atlas",
+    "directory": "node"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

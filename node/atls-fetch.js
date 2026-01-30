@@ -74,7 +74,7 @@ const {
   socketClose,
   socketDestroy,
   mergeWithDefaultAppCompose,
-} = require("./index.cjs")
+} = require("./index.js")
 
 /**
  * Parse target host string into host:port format

@@ -6,7 +6,7 @@
 #   3. Run this workflow with dry_run=false
 #
 # The workflow will:
-#   - Build for all platforms
+#   - Build for all platforms (using native runners)
 #   - Create git tag: node/<version>
 #   - Create draft GitHub release
 #   - Publish to npm
@@ -27,29 +27,29 @@ env:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Linux GNU targets use --use-napi-cross
+          # Linux x64
           - target: x86_64-unknown-linux-gnu
-            build_flags: "--use-napi-cross"
+            os: ubuntu-24.04
+          # Linux arm64
           - target: aarch64-unknown-linux-gnu
-            build_flags: "--use-napi-cross"
-          # All others use -x (zigbuild/xwin)
+            os: ubuntu-24.04-arm
+          # macOS x64
           - target: x86_64-apple-darwin
-            build_flags: "-x"
+            os: macos-15-intel
+          # macOS arm64
           - target: aarch64-apple-darwin
-            build_flags: "-x"
+            os: macos-15
+          # Windows x64
           - target: x86_64-pc-windows-msvc
-            build_flags: "-x"
+            os: windows-latest
+          # Windows arm64
           - target: aarch64-pc-windows-msvc
-            build_flags: "-x"
-          - target: x86_64-unknown-linux-musl
-            build_flags: "-x"
-          - target: aarch64-unknown-linux-musl
-            build_flags: "-x"
+            os: windows-11-arm
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -63,12 +63,18 @@ jobs:
         with:
           version: 10
 
-      - name: Install Rust
+      - name: Install Rust (Unix)
+        if: runner.os != 'Windows'
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-          source "$HOME/.cargo/env"
-          rustup target add ${{ matrix.target }}
+
+      - name: Install Rust (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          Invoke-WebRequest -Uri https://win.rustup.rs/x86_64 -OutFile rustup-init.exe
+          .\rustup-init.exe -y --default-toolchain stable
+          echo "$env:USERPROFILE\.cargo\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -78,26 +84,18 @@ jobs:
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-            ~/.xwin
-          key: ${{ runner.os }}-cargo-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Install cross-compilation tools
+      # we set bash so that it also works for Windows runners
+      - name: Install napi-rs cli
+        shell: bash
         run: |
-          cargo install cargo-zigbuild --locked || true
-          cargo install cargo-xwin --locked || true
-
-      - name: Setup zig
-        run: |
-          ZIG_VERSION="0.13.0"
-          curl -sSfL "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz" | tar -xJ
-          echo "${PWD}/zig-linux-x86_64-${ZIG_VERSION}" >> $GITHUB_PATH
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+          NAPI_VERSION=$(node -p "require('./package.json').devDependencies['@napi-rs/cli']")
+          pnpm add @napi-rs/cli@$NAPI_VERSION
         working-directory: node
 
       - name: Build
-        run: pnpm build --target ${{ matrix.target }} ${{ matrix.build_flags }}
+        run: pnpm build --target ${{ matrix.target }}
         working-directory: node
 
       - name: Upload artifact
@@ -129,8 +127,10 @@ jobs:
         with:
           version: 10
 
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+      - name: Install napi-rs cli
+        run: |
+          NAPI_VERSION=$(node -p "require('./package.json').devDependencies['@napi-rs/cli']")
+          pnpm add @napi-rs/cli@$NAPI_VERSION
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -138,7 +138,9 @@ jobs:
           path: node/artifacts
 
       - name: Move artifacts
-        run: pnpm artifacts
+        run: |
+          ls -la artifacts/
+          pnpm artifacts --dir artifacts
 
       - name: List packages
         run: ls -la npm/
