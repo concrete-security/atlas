@@ -1,229 +1,51 @@
-# aTLS Toolkit
+# Atlas
 
-Attested TLS for the modern web. This toolkit delivers verified TLS connections to Trusted Execution Environments (TEEs) from browsers (via WASM) and Node.js.
+Atlas is a library implementing an attested TLS (aTLS) protocol. It delivers verified TLS connections to Trusted Execution Environments (TEEs) from different platforms (Browsers/Wasm, Node.js, Rust).
 
----
-
-# 1. Project Overview & Quickstart
-
-## Key Features
-- Multi-platform: native bindings for Node.js, WASM for browsers, and a Rust core for direct integration.
-- Configurable policy engine: enforce TCB levels, measurements, advisory IDs.
-- Supported TEEs: Intel TDX today; AMD SEV-SNP planned.
+> [!NOTE]
+> Atlas is the library name, while aTLS refers to the attested TLS protocol.
 
 ---
 
-# 2. Architecture & Data Flow
+## Overview
 
-Browsers lack raw TCP sockets and attestation primitives. The toolkit uses WebSocket/WebTransport tunnels to work around these limitations.
+### Key Features
+- **Multi-platform**: Native bindings for Node.js, WASM for browsers, and a Rust crate (native)
+- **Configurable policy engine**: Enforce TCB levels, bootchain measurements, and application configurations
+- **Supported TEEs**: Intel TDX (AMD SEV-SNP planned)
+- **Session binding**: Cryptographic binding of attestations to TLS sessions via EKM (RFC 9266)
 
-1. **Handshake:** WASM client completes TLS 1.3 over a WebSocket connection.
-2. **Quote Fetch:** Client issues an HTTP request to fetch the hardware quote.
-3. **Verification:** `atlas-core` validates the quote against the TLS certificate and user policy.
+### Quick Start
 
----
+Choose your platform:
+- **Node.js**: `npm install @concrete-security/atlas-node` → [See node/README.md](node/README.md)
+- **Browser/WASM**: `npm install @concrete-security/atlas-wasm` → [See wasm/README.md](wasm/README.md)
+- **Rust**: `cargo add atlas-core` → [See core/README.md](core/README.md)
 
-# 3. Component Guide
-
-## `core/`
-- `atls_connect`: Handshake + verification over a generic async byte stream.
-- `AtlsVerifier` trait: Extensible verification interface for different TEE types.
-- `DstackTdxPolicy`: Configures TDX verification including bootchain, app compose, and TCB status.
-
-## `node/`
-- `createAtlsFetch(...)`: Drop-in fetch replacement for Node.js applications.
-- `createAtlsAgent(...)`: Custom HTTPS agent for use with existing HTTP clients.
-- Works with AI SDKs (OpenAI, Vercel AI SDK) via fetch override.
-
-Example:
-```javascript
-import { createAtlsFetch } from "atlas-node";
-
-const fetch = createAtlsFetch({
-  target: "secure-enclave.com",
-  policy: { type: "dstack_tdx", /* ... */ },
-  onAttestation: (att) => console.log("TEE:", att.teeType)
-});
-
-const response = await fetch("/v1/chat/completions", {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ model: "gpt", messages: [...] })
-});
-
-console.log(response.attestation); // { trusted: true, teeType: "tdx", ... }
-```
-
-## `wasm/`
-- `AtlsHttp`: HTTP client over attested TLS with chunked transfer encoding support.
-- `AttestedStream`: Low-level attested TLS stream for custom protocols.
-- `createAtlsFetch(...)`: Fetch-compatible API for browser applications.
-
-Example:
-```javascript
-import { createAtlsFetch } from "./pkg/atls-fetch.js";
-
-const fetch = createAtlsFetch({
-  proxyUrl: "ws://127.0.0.1:9000",
-  targetHost: "secure-enclave.com",
-  onAttestation: (att) => console.log("TEE:", att.teeType)
-});
-
-const response = await fetch("/v1/chat/completions", {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ model: "gpt", messages: [...] })
-});
-
-// Streaming works (chunked encoding handled in WASM)
-for await (const chunk of response.body) { /* ... */ }
-console.log(response.attestation); // { trusted: true, teeType: "Tdx", ... }
-```
-
-## Additional Directories
-- `python/`: PyO3 bindings with async helpers.
-- `server-examples/`: Reference aTLS servers for TDX/SNP (coming soon).
-- `docs/`: Design notes, specs, and task tracking.
-
-## Binding status
-- Node.js: functional; provides `createAtlsFetch` and `createAtlsAgent` via native NAPI bindings.
-- WASM: functional; provides `AtlsHttp`, `AttestedStream`, and `createAtlsFetch`.
-- Python: scaffolding in progress (`python/README.md`) with planned async API parity once the core pieces stabilize.
+For protocol details, policy configuration, and security features, see [core/README.md](core/README.md).
 
 ---
 
-# 4. Policy Configuration
+## Documentation
 
-Policies describe what constitutes an acceptable attestation. The `atlas-core` API (and each binding) consumes a `Policy` enum with the following shape:
-
-```json
-{
-  "type": "dstack_tdx",
-  "allowed_tcb_status": ["UpToDate", "SWHardeningNeeded"],
-  "expected_bootchain": {
-    "mrtd": "hex...",
-    "rtmr0": "hex...",
-    "rtmr1": "hex...",
-    "rtmr2": "hex..."
-  },
-  "app_compose": {
-    "runner": "docker-compose",
-    "docker_compose_file": "..."
-  },
-  "os_image_hash": "hex...",
-  "pccs_url": "https://pccs.phala.network/tdx/certification/v4"
-}
-```
-
-| Field | Purpose |
-| --- | --- |
-| `type` | Chooses the verifier backend (`dstack_tdx`). |
-| `allowed_tcb_status` | Acceptable TCB status strings (e.g., `UpToDate`, `SWHardeningNeeded`). |
-| `expected_bootchain` | Expected MRTD and RTMR0-2 measurements for bootchain verification. |
-| `app_compose` | Expected application compose configuration (hash verified). |
-| `os_image_hash` | Expected OS image hash (SHA256). |
-| `pccs_url` | Intel PCCS URL for collateral fetching. |
-
-Verification flow with a policy:
-1. Perform TLS handshake and capture server certificate.
-2. Fetch TDX quote from server via `/tdx_quote` endpoint.
-3. Verify DCAP quote signature using Intel PCS collateral.
-4. Check TCB status is in `allowed_tcb_status`.
-5. Verify certificate is bound in the event log.
-6. Replay event log to verify RTMR3.
-7. If configured, verify bootchain (MRTD, RTMR0-2), app compose hash, and OS image hash.
+- **[core/README.md](core/README.md)** - aTLS protocol documentation including policy configuration, security features, and protocol specification
+- **[core/ARCHITECTURE.md](core/ARCHITECTURE.md)** - Architecture guide for contributors and extending aTLS
+- **[core/BOOTCHAIN-VERIFICATION.md](core/BOOTCHAIN-VERIFICATION.md)** - Computing bootchain measurements for production deployments
+- **[node/README.md](node/README.md)** - Node.js binding API reference and examples
+- **[wasm/README.md](wasm/README.md)** - Browser/WASM binding API reference and setup
+- **[wasm/proxy/README.md](wasm/proxy/README.md)** - WebSocket proxy configuration for browser deployments
 
 ---
 
-# 5. Security Features
+## Development
 
-## Session Binding via EKM
+### Directory Structure
+- [core/](core/) - Rust library for attestation verification and policy enforcement
+- [node/](node/) - Node.js bindings via NAPI-RS
+- [wasm/](wasm/) - Browser bindings via WebAssembly
 
-aTLS binds attestations to specific TLS sessions using **Exported Keying Material (EKM)** per [RFC 5705](https://datatracker.ietf.org/doc/html/rfc5705) (see also [RFC 8446 Section 7.5](https://datatracker.ietf.org/doc/html/rfc8446#section-7.5)) and [RFC 9266](https://datatracker.ietf.org/doc/html/rfc9266). This prevents attestation relay attacks where an attacker with a compromised private key could relay attestations across different TLS sessions.
+### Build Commands
 
-### How It Works
+See [Makefile](./Makefile).
 
-1. After the TLS handshake completes, both client and server extract a 32-byte session-specific EKM using the label `"EXPORTER-Channel-Binding"`.
-2. The client generates a random 32-byte nonce for freshness.
-3. Both parties compute `report_data = SHA512(nonce || session_ekm)`.
-4. The server generates a TDX quote with this computed `report_data`.
-5. The client verifies the quote, ensuring the `report_data` matches its own computation.
-
-Since the EKM is derived from the TLS session's master secret (unique per session), each attestation is cryptographically bound to its specific TLS connection. An attacker cannot relay an attestation from one session to another, even with access to the private key.
-
-**Key Properties:**
-- **Always enabled** - No configuration needed
-- **Transparent** - Works automatically with all aTLS connections
-- **Standards-based** - Uses RFC 9266 channel binding for TLS 1.3
-- **Defense-in-depth** - Protects against key compromise scenarios
-
----
-
-# 6. Protocol Specification
-
-### Step 1: TLS Handshake
-- TLS 1.3 with a promiscuous verifier. The certificate is accepted temporarily and recorded.
-
-### Step 2: EKM Extraction & Quote Retrieval
-After TLS handshake, both client and server extract session EKM:
-```rust
-session_ekm = export_keying_material(32, "EXPORTER-Channel-Binding", None)
-```
-
-Client generates a 32-byte nonce and computes expected report_data:
-```rust
-nonce = random_bytes(32)
-report_data = SHA512(nonce || session_ekm)
-```
-
-Client sends an HTTP POST over the established TLS channel:
-```http
-POST /tdx_quote HTTP/1.1
-Host: localhost
-Content-Type: application/json
-{
-  "nonce_hex": "<hex_nonce>"
-}
-```
-
-Server extracts its own session EKM, computes the same `report_data = SHA512(nonce || server_ekm)`, and generates a quote with that report_data.
-
-Server responds:
-```json
-{
-  "success": true,
-  "quote": {
-    "quote": "<hex_tdx_quote>",
-    "event_log": [...]
-  },
-  "collateral": { ... }
-}
-```
-
-### Step 3: Verification
-1. Validate the quote signature using Intel PCCS collateral (`dcap-qvl` flow).
-2. Ensure `report_data` in the quote equals `SHA512(nonce || session_ekm)` (session binding + freshness).
-3. Recompute RTMR3 by replaying every event log entry in order and ensure the final digest matches the quote.
-4. During that replay, locate the TLS key binding event (contains the certificate pubkey hash) to prove the attested workload owns the negotiated TLS key.
-
----
-
-# Development Reference
-
-## Directory Structure
-- `core/`: Verification + policy (Rust).
-- `node/`: Node.js bindings (NAPI-RS).
-- `wasm/`: Browser bindings (WASM).
-- `server-examples/`: Forthcoming reference TEEs.
-
-## Build Commands
-
-| Command | Description |
-| --- | --- |
-| `make test` | Run Rust unit tests for core. |
-| `make test-wasm` | Check build for the `wasm32` target. |
-| `make build-wasm` | Compile the WASM package into `pkg/`. |
-
-## Troubleshooting WASM Builds
-- Errors like `rust-lld: error: unknown file type` typically mean LLVM/Clang lacks `wasm32` support.
-- On macOS, run `make setup-wasm` to install a compatible LLVM via Homebrew, then re-run `make build-wasm`.
+For platform-specific build instructions, see [node/README.md](node/README.md) and [wasm/README.md](wasm/README.md).
