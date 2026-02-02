@@ -1,7 +1,7 @@
 # Publish @concrete-security/atlas-node to npm
 #
 # How to release:
-#   1. Update version in node/package.json
+#   1. Update versions via `pnpm sync-versions x.x.x`
 #   2. Commit and push the change
 #   3. Run this workflow with dry_run=false
 #
