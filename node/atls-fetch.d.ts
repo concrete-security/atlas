@@ -138,7 +138,7 @@ export interface AtlsFetchOptions {
  *
  * @example Production usage with full verification
  * ```ts
- * import { createAtlsFetch, mergeWithDefaultAppCompose } from "atls-node"
+ * import { createAtlsFetch, mergeWithDefaultAppCompose } from "atlas-node"
  *
  * const policy: Policy = {
  *   type: "dstack_tdx",
@@ -176,7 +176,7 @@ export interface AtlsFetchOptions {
  *
  * @example With AI SDK
  * ```ts
- * import { createAtlsFetch } from "atls-node"
+ * import { createAtlsFetch } from "atlas-node"
  * import { createOpenAI } from "@ai-sdk/openai"
  *
  * const fetch = createAtlsFetch({

@@ -1,0 +1,104 @@
+# Publish @concrete-security/atlas-wasm to npm
+#
+# How to release:
+#   1. Update version in wasm/package.json
+#   2. Commit and push the change
+#   3. Run this workflow with dry_run=false
+#
+# The workflow will:
+#   - Build WASM package
+#   - Create git tag: wasm/<version>
+#   - Create draft GitHub release
+#   - Publish to npm
+
+name: Publish WASM Package
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (skip npm publish and release)'
+        type: boolean
+        default: true
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    defaults:
+      run:
+        working-directory: wasm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          source "$HOME/.cargo/env"
+          rustup target add wasm32-unknown-unknown
+
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --locked
+
+      - name: Build WASM
+        run: wasm-pack build --target web --out-dir pkg
+
+      - name: Merge package.json
+        run: |
+          # Merge source package.json with generated pkg/package.json
+          # Source file (wasm/package.json) takes precedence
+          jq -s '.[0] * .[1]' pkg/package.json package.json > package.json.tmp
+          mv package.json.tmp pkg/package.json
+
+      - name: Copy wrapper files
+        run: |
+          cp src/atls-fetch.js pkg/
+          cp src/atls-fetch.d.ts pkg/
+
+      - name: Show package.json
+        run: cat pkg/package.json
+
+      - name: Show files to be published
+        run: ls -la pkg/
+
+      - name: Dry run
+        if: ${{ inputs.dry_run }}
+        run: |
+          echo "Dry run - would publish:"
+          cat pkg/package.json | grep -E '"name"|"version"'
+          echo ""
+          echo "Files:"
+          ls -la pkg/
+
+      - name: Publish to npm
+        if: ${{ !inputs.dry_run }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --provenance --access public pkg/
+
+      - name: Create draft release
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=$(jq -r '.version' package.json)
+          TAG="wasm/${VERSION}"
+          echo "version: ${VERSION}"
+          echo "tag: ${TAG}"
+
+          git tag "$TAG"
+          git push origin "$TAG"
+
+          gh release create --draft --repo ${{ github.repository }} \
+            --verify-tag "$TAG" \
+            --title "atlas-wasm v${VERSION}" \
+            --notes "Published @concrete-security/atlas-wasm@${VERSION} to npm"

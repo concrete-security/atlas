@@ -32,3 +32,10 @@ export declare function socketWrite(socketId: number, data: Buffer): Promise<num
 export declare function socketClose(socketId: number): Promise<void>
 /** Immediately destroy the socket */
 export declare function socketDestroy(socketId: number): void
+/**
+ * Close all open sockets - call before process exit for graceful cleanup.
+ *
+ * This closes all open TLS connections and releases resources held by the
+ * native binding. Call this before process.exit() to ensure clean shutdown.
+ */
+export declare function closeAllSockets(): Promise<void>

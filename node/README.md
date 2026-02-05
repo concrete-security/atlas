@@ -1,22 +1,24 @@
-# atls-node
+# atlas-node
 
-Attested TLS connections for Node.js. Connect securely to Trusted Execution Environments (TEEs) with cryptographic proof of their integrity.
+attested TLS (aTLS) connections for Node.js. Connect securely to Trusted Execution Environments (TEEs).
+
+> **For aTLS protocol details, policy configuration, and security features, see [core/README.md](../core/README.md)**
 
 ## Installation
 
 ```bash
-npm install atls-node
+npm install @concrete-security/atlas-node
 ```
 
 Prebuilt binaries are included for:
 - macOS (x64, arm64)
-- Linux (x64, arm64) with glibc or musl
-- Windows (x64)
+- Linux (x64, arm64)
+- Windows (x64, arm64)
 
 ## Quick Start
 
 ```typescript
-import { createAtlsFetch } from "atls-node"
+import { createAtlsFetch } from "@concrete-security/atlas-node"
 
 const fetch = createAtlsFetch("enclave.example.com")
 const response = await fetch("/api/secure-data")
@@ -30,7 +32,7 @@ console.log(response.attestation.teeType)  // "tdx"
 Connect to LLM inference servers running in TEEs (vLLM, etc.):
 
 ```typescript
-import { createAtlsFetch } from "atls-node"
+import { createAtlsFetch } from "@concrete-security/atlas-node"
 import { createOpenAI } from "@ai-sdk/openai"
 import { streamText } from "ai"
 
@@ -94,7 +96,7 @@ const fetch = createAtlsFetch({
 For use with `https.request`, axios, or other HTTP clients:
 
 ```typescript
-import { createAtlsAgent } from "atls-node"
+import { createAtlsAgent } from "@concrete-security/atlas-node"
 import https from "https"
 
 const agent = createAtlsAgent({
@@ -111,6 +113,23 @@ https.get("https://enclave.example.com/api", { agent }, (res) => {
 import axios from "axios"
 const client = axios.create({ httpsAgent: agent })
 ```
+
+### `closeAllSockets()`
+
+Close all open aTLS connections. Use for graceful shutdown in long-running processes:
+
+```typescript
+import { closeAllSockets } from "@concrete-security/atlas-node/binding"
+
+// Before process exit
+await closeAllSockets()
+process.exit(0)
+```
+
+**Recommended for:**
+- Server processes with graceful shutdown handlers
+- Test suites that need clean teardown
+- CLI tools that need clean exit
 
 ### Response Type
 
@@ -147,10 +166,38 @@ console.log(response.attestation)
 
 ### TCB Status Values
 
-- `UpToDate` - Platform is fully patched
-- `SWHardeningNeeded` - Software mitigations required
-- `ConfigurationNeeded` - Configuration changes needed
-- `OutOfDate` - Platform needs updates
+Common TCB status values: `UpToDate`, `SWHardeningNeeded`, `ConfigurationNeeded`, `OutOfDate`.
+
+For complete TCB status descriptions and production recommendations, see [core/README.md#tcb-status-values](../core/README.md#tcb-status-values).
+
+## Policy Configuration
+
+Policies control attestation verification requirements. Pass a policy object to `createAtlsFetch` or `createAtlsAgent`:
+
+```typescript
+const fetch = createAtlsFetch({
+  target: "enclave.example.com",
+  policy: {
+    type: "dstack_tdx",
+    allowed_tcb_status: ["UpToDate", "SWHardeningNeeded"],
+    expected_bootchain: {
+      mrtd: "b24d3b24...",
+      rtmr0: "24c15e08...",
+      rtmr1: "6e1afb74...",
+      rtmr2: "89e73ced..."
+    },
+    os_image_hash: "86b18137...",
+    app_compose: {
+      runner: "docker-compose",
+      docker_compose_file: "..."
+    }
+  }
+})
+```
+
+For complete policy field descriptions, verification flow, and computing bootchain measurements, see:
+- [core/README.md#policy-configuration](../core/README.md#policy-configuration)
+- [core/BOOTCHAIN-VERIFICATION.md](../core/BOOTCHAIN-VERIFICATION.md)
 
 ## Building from Source
 
@@ -158,53 +205,25 @@ Requires Rust 1.88+ and Node.js 18+:
 
 ```bash
 # Build the native module
-cargo build -p atls-node --release
+cargo build -p atlas-node --release
 
 # Run the demo
 node examples/ai-sdk-openai-demo.mjs "Hello from aTLS"
 ```
 
-### Using napi-rs CLI
+### Version Management
 
-For development with hot-reload or to build platform-specific binaries:
+All package versions (main package, platform packages, and optionalDependencies) must stay in sync. Use the version sync script:
 
 ```bash
 cd node
-pnpm install
-pnpm build          # Build for current platform (release)
-pnpm build:debug    # Build for current platform (debug)
+pnpm sync-versions 0.2.0
 ```
 
-## Publishing to npm
-
-The package uses [@napi-rs/cli](https://napi.rs) for cross-platform native module distribution.
-
-### Automated Publishing (CI)
-
-1. Add `NPM_TOKEN` secret to your GitHub repository settings
-2. Create and push a version tag:
-
-```bash
-git tag v0.1.0
-git push --tags
-```
-
-The GitHub Actions workflow will:
-- Build native binaries for all platforms (macOS, Linux, Windows)
-- Publish platform-specific packages (`@atls-node/darwin-arm64`, etc.)
-- Publish the main `atls-node` package
-
-### Manual Publishing
-
-```bash
-# Dry run from GitHub Actions UI
-# Go to Actions → "Publish Node Package" → Run workflow → Enable "Dry run"
-
-# Or publish locally (single platform only)
-cd node
-pnpm build
-npm publish
-```
+This updates:
+- Main `package.json` version
+- All `optionalDependencies` versions in main package
+- All platform package versions in `npm/*/package.json`
 
 ### Platform Packages
 
@@ -212,30 +231,32 @@ The main package has optional dependencies on platform-specific packages:
 
 | Package | Platform |
 |---------|----------|
-| `@atls-node/darwin-arm64` | macOS Apple Silicon |
-| `@atls-node/darwin-x64` | macOS Intel |
-| `@atls-node/linux-x64-gnu` | Linux x64 (glibc) |
-| `@atls-node/linux-x64-musl` | Linux x64 (musl/Alpine) |
-| `@atls-node/linux-arm64-gnu` | Linux ARM64 (glibc) |
-| `@atls-node/linux-arm64-musl` | Linux ARM64 (musl/Alpine) |
-| `@atls-node/win32-x64-msvc` | Windows x64 |
+| `@concrete-security/atlas-node-darwin-arm64` | macOS Apple Silicon |
+| `@concrete-security/atlas-node-darwin-x64` | macOS Intel |
+| `@concrete-security/atlas-node-linux-x64-gnu` | Linux x64 |
+| `@concrete-security/atlas-node-linux-arm64-gnu` | Linux ARM64 |
+| `@concrete-security/atlas-node-win32-x64-msvc` | Windows x64 |
+| `@concrete-security/atlas-node-win32-arm64-msvc` | Windows ARM64 |
 
 ## How It Works
 
-1. **Direct TCP Connection** - Connects directly to the TEE endpoint (no proxy needed)
-2. **TLS Handshake** - Establishes TLS with the server
-3. **Quote Extraction** - Retrieves attestation quote from the server certificate
-4. **DCAP Verification** - Verifies the quote against Intel's attestation infrastructure
-5. **Request Execution** - Proceeds with the HTTP request over the verified channel
+Node.js bindings connect directly to TEE endpoints via TCP (no proxy required):
 
-All verification happens automatically on each request. The attestation result is exposed on every response for audit logging or policy enforcement.
+1. **TLS Handshake** - Establishes TLS 1.3 with session binding via EKM
+2. **Quote Retrieval** - Fetches attestation quote from the server
+3. **Verification** - Validates quote against policy using Intel DCAP
+4. **Request Execution** - Proceeds with HTTP request over verified channel
+
+All verification happens automatically. The attestation result is exposed on every response for audit logging or policy enforcement.
+
+For detailed protocol specification and security features, see [core/README.md#protocol-specification](../core/README.md#protocol-specification).
 
 ## TypeScript Support
 
 Full TypeScript definitions are included:
 
 ```typescript
-import { createAtlsFetch, AtlsFetch, AtlsAttestation, AtlsResponse } from "atls-node"
+import { createAtlsFetch, AtlsFetch, AtlsAttestation, AtlsResponse } from "@concrete-security/atlas-node"
 
 const fetch: AtlsFetch = createAtlsFetch("enclave.example.com")
 

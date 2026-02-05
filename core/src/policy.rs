@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 /// # Example
 ///
 /// ```
-/// use atls_core::{Policy, DstackTdxPolicy};
+/// use atlas_rs::{Policy, DstackTdxPolicy};
 ///
 /// // Default policy
 /// let policy = Policy::default();
@@ -49,7 +49,7 @@ impl Policy {
     /// # Example
     ///
     /// ```
-    /// use atls_core::{Policy, DstackTdxPolicy};
+    /// use atlas_rs::{Policy, DstackTdxPolicy};
     ///
     /// let policy = Policy::DstackTdx(DstackTdxPolicy::dev());
     /// let verifier = policy.into_verifier().unwrap();

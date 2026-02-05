@@ -3,7 +3,7 @@
  *
  * @example Production usage with full verification
  * ```js
- * import { createAtlsFetch, mergeWithDefaultAppCompose } from "atls-node"
+ * import { createAtlsFetch, mergeWithDefaultAppCompose } from "atlas-node"
  *
  * const policy = {
  *   type: "dstack_tdx",
@@ -28,7 +28,7 @@
  *
  * @example Development only (NOT for production)
  * ```js
- * import { createAtlsFetch } from "atls-node"
+ * import { createAtlsFetch } from "atlas-node"
  *
  * // WARNING: disable_runtime_verification skips bootchain/app_compose/os_image checks
  * // Use ONLY for development/testing, NEVER in production
@@ -43,7 +43,7 @@
  *
  * @example With AI SDK
  * ```js
- * import { createAtlsFetch } from "atls-node"
+ * import { createAtlsFetch } from "atlas-node"
  * import { createOpenAI } from "@ai-sdk/openai"
  *
  * const fetch = createAtlsFetch({

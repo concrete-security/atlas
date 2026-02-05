@@ -2,7 +2,7 @@ use bytes::{Bytes, BytesMut};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use once_cell::sync::Lazy;
-use atls_core::{
+use atlas_rs::{
     dstack::merge_with_default_app_compose, atls_connect as core_atls_connect, Policy, Report,
     TlsStream as CoreTlsStream,
 };
@@ -201,6 +201,24 @@ pub fn socket_destroy(socket_id: u32) -> napi::Result<()> {
         let mut guard = SOCKETS.lock().await;
         guard.remove(&socket_id);
     });
+    Ok(())
+}
+
+/// Close all open sockets - call before process exit for graceful cleanup.
+///
+/// This closes all open TLS connections and releases resources held by the
+/// native binding. Call this before process.exit() to ensure clean shutdown.
+#[napi(js_name = "closeAllSockets")]
+pub async fn close_all_sockets() -> napi::Result<()> {
+    let mut guard = SOCKETS.lock().await;
+
+    // Close all sockets gracefully
+    for (_, state) in guard.drain() {
+        let mut writer = state.writer.lock().await;
+        let _ = writer.flush().await;
+        let _ = writer.shutdown().await;
+    }
+
     Ok(())
 }
 

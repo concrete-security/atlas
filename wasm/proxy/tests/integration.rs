@@ -1,4 +1,4 @@
-//! Integration tests for atls-proxy WebSocket-to-TCP forwarding.
+//! Integration tests for atlas-proxy WebSocket-to-TCP forwarding.
 
 use futures_util::{SinkExt, StreamExt};
 use std::time::Duration;

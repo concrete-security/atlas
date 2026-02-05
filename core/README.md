@@ -1,6 +1,8 @@
-# atls-core
+# atlas-rs
 
 Rust library for attested TLS (aTLS) verification. Verify that TLS servers are running inside Trusted Execution Environments (TEEs) like Intel TDX before sending sensitive data.
+
+**aTLS protocol documentation:** This document describes the core aTLS protocol, policy configuration, security features, and verification flow.
 
 ## Installation
 
@@ -8,9 +10,20 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-atls-core = { git = "https://github.com/concrete-security/ratls", branch = "main" }
-tokio = { version = "1", features = ["full"] }
-serde_json = "1"
+atlas-rs = "0.1"
+```
+
+Or use `cargo add`:
+
+```bash
+cargo add atlas-rs
+```
+
+**Development/Latest:** To use the latest development version from GitHub:
+
+```toml
+[dependencies]
+atlas-rs = { git = "https://github.com/concrete-security/atlas", branch = "main" }
 ```
 
 ## Quick Start
@@ -20,7 +33,7 @@ serde_json = "1"
 For development and testing, use `DstackTdxPolicy::dev()` which accepts more TCB statuses but still verifies the TEE:
 
 ```rust
-use atls_core::{atls_connect, Policy, DstackTdxPolicy};
+use atlas_rs::{atls_connect, Policy, DstackTdxPolicy};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -33,7 +46,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Access attestation report
     match &report {
-        atls_core::Report::Tdx(tdx_report) => {
+        atlas_rs::Report::Tdx(tdx_report) => {
             println!("TEE verified! TCB Status: {}", tdx_report.status);
         }
     }
@@ -48,7 +61,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 For production, provide bootchain measurements and app configuration:
 
 ```rust
-use atls_core::{atls_connect, Policy, DstackTdxPolicy, ExpectedBootchain};
+use atlas_rs::{atls_connect, Policy, DstackTdxPolicy, ExpectedBootchain};
 use serde_json::json;
 
 #[tokio::main]
@@ -86,7 +99,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 Policies can be loaded from JSON files:
 
 ```rust
-use atls_core::{atls_connect, Policy};
+use atlas_rs::{atls_connect, Policy};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -121,7 +134,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 For custom TLS handling, use the `AtlsVerifier` trait directly:
 
 ```rust
-use atls_core::{DstackTDXVerifier, AtlsVerifier, ExpectedBootchain};
+use atlas_rs::{DstackTDXVerifier, AtlsVerifier, ExpectedBootchain};
 use serde_json::json;
 
 #[tokio::main]
@@ -175,7 +188,7 @@ Policy fields vary by verifier implementation. The `Policy` enum wraps implement
 | `cache_collateral` | Cache Intel collateral (default: false) | No |
 
 ```rust
-use atls_core::{Policy, DstackTdxPolicy, ExpectedBootchain};
+use atlas_rs::{Policy, DstackTdxPolicy, ExpectedBootchain};
 use serde_json::json;
 
 // Development policy - explicitly disables runtime verification
@@ -207,7 +220,7 @@ let invalid_policy = Policy::DstackTdx(DstackTdxPolicy::default());
 ## Error Handling
 
 ```rust
-use atls_core::{atls_connect, Policy, DstackTdxPolicy, AtlsVerificationError};
+use atlas_rs::{atls_connect, Policy, DstackTdxPolicy, AtlsVerificationError};
 
 async fn verify_tee() -> Result<(), AtlsVerificationError> {
     let tcp = tokio::net::TcpStream::connect("tee.example.com:443")
@@ -234,12 +247,105 @@ async fn verify_tee() -> Result<(), AtlsVerificationError> {
 }
 ```
 
+## Security Features
+
+### Session Binding via EKM
+
+aTLS binds attestations to specific TLS sessions using **Exported Keying Material (EKM)** per [RFC 5705](https://datatracker.ietf.org/doc/html/rfc5705), [RFC 8446 Section 7.5](https://datatracker.ietf.org/doc/html/rfc8446#section-7.5), and [RFC 9266](https://datatracker.ietf.org/doc/html/rfc9266). This prevents attestation relay attacks where an attacker (non-TEE) with a compromised private key could relay attestations across different TLS sessions.
+
+**How It Works:**
+
+1. After TLS handshake, both client and server extract a 32-byte session-specific EKM using the label `"EXPORTER-Channel-Binding"`
+2. Client generates a random 32-byte nonce for freshness
+3. Both parties compute `report_data = SHA512(nonce || session_ekm)`
+4. Server generates a TDX quote with this computed `report_data`
+5. Client verifies the quote, ensuring the `report_data` matches its own computation
+
+Since the EKM is derived from the TLS session's master secret (unique per session), each attestation is cryptographically bound to its specific TLS connection. An attacker cannot relay an attestation from one session to another, even with access to the private key.
+
+**Key Properties:**
+- **Always enabled** - No configuration needed
+- **Transparent** - Works automatically with all aTLS connections
+- **Standards-based** - Uses RFC 9266 channel binding for TLS 1.3
+- **Defense-in-depth** - Protects against key compromise scenarios
+
+## Protocol Specification
+
+### Step 1: TLS Handshake
+
+TLS 1.3 handshake with a promiscuous verifier. The certificate is accepted temporarily and recorded for later verification.
+
+### Step 2: EKM Extraction & Quote Retrieval
+
+After TLS handshake, both client and server extract session EKM:
+
+```rust
+session_ekm = export_keying_material(32, "EXPORTER-Channel-Binding", None)
+```
+
+Client generates a 32-byte nonce and computes expected report_data:
+
+```rust
+nonce = random_bytes(32)
+report_data = SHA512(nonce || session_ekm)
+```
+
+Client sends an HTTP POST over the established TLS channel:
+
+```http
+POST /tdx_quote HTTP/1.1
+Host: localhost
+Content-Type: application/json
+
+{
+  "nonce_hex": "<hex_nonce>"
+}
+```
+
+Server extracts its own session EKM, computes the same `report_data = SHA512(nonce || server_ekm)`, and generates a quote with that report_data.
+
+Server responds:
+
+```json
+{
+  "success": true,
+  "quote": {
+    "quote": "<hex_tdx_quote>",
+    "event_log": ["..."]
+  },
+  "...": "..."
+}
+```
+
+### Step 3: Verification
+
+1. Validate the quote signature using Intel PCCS collateral (DCAP verification flow)
+2. Ensure `report_data` in the quote equals `SHA512(nonce || session_ekm)` (session binding + freshness)
+3. Recompute RTMR3 by replaying every event log entry in order and ensure the final digest matches the quote
+4. During that replay, locate the TLS key binding event (contains the certificate pubkey hash) to prove the attested workload owns the negotiated TLS key
+5. Verify bootchain (MRTD, RTMR0-2), app compose hash, and OS image hash against policy
+
+## TCB Status Values
+
+TCB (Trusted Computing Base) status indicates the security posture of the TEE platform:
+
+| Status | Meaning | Production Use |
+|--------|---------|----------------|
+| `UpToDate` | Platform is fully patched | ✅ Recommended |
+| `SWHardeningNeeded` | Software hardening recommended but not critical | ⚠️ Acceptable with risk assessment |
+| `ConfigurationNeeded` | Platform configuration changes recommended | ⚠️ Acceptable with risk assessment |
+| `ConfigurationAndSWHardeningNeeded` | Both configuration and SW hardening needed | ⚠️ Use with caution |
+| `OutOfDate` | Platform has known security vulnerabilities | ❌ Not recommended |
+| `OutOfDateConfigurationNeeded` | Platform is out of date and needs reconfiguration | ❌ Not recommended |
+
+Configure allowed statuses via `allowed_tcb_status` in your policy. For production, use `["UpToDate"]`. For development/testing, `DstackTdxPolicy::dev()` allows more permissive statuses.
+
 ## Documentation
 
-- [ARCHITECTURE.md](ARCHITECTURE.md) - Design overview and extension guide
-- [BOOTCHAIN-VERIFICATION.md](BOOTCHAIN-VERIFICATION.md) - Computing bootchain measurements
+- [ARCHITECTURE.md](ARCHITECTURE.md) - Design overview and extension guide for contributors
+- [BOOTCHAIN-VERIFICATION.md](BOOTCHAIN-VERIFICATION.md) - Computing bootchain measurements for production deployments
 
 ## Platform Support
 
-- **Native** (Linux, macOS, Windows): Uses tokio for async I/O
-- **WASM**: Uses futures for async I/O (see `wasm/` crate)
+- **Native** (Linux, macOS, Windows): Full support with tokio async I/O
+- **WASM**: Browser support via futures async I/O (see [wasm/](../wasm/))

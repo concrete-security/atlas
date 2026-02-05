@@ -2,7 +2,7 @@
 //!
 //! These tests verify real TDX attestation against a live dstack deployment.
 
-use atls_core::{
+use atlas_rs::{
     DstackTDXVerifierBuilder, ExpectedBootchain, AtlsVerificationError, dstack::{compose_hash::get_compose_hash, get_default_app_compose}
 };
 use serde_json::json;
@@ -118,7 +118,7 @@ fn test_expected_bootchain_values() {
 
 mod integration {
     use super::*;
-    use atls_core::AtlsVerifier;
+    use atlas_rs::AtlsVerifier;
     use rustls::pki_types::ServerName;
     use rustls::crypto::ring::default_provider;
     use std::sync::Arc;
@@ -195,7 +195,7 @@ mod integration {
         );
         let report = result.unwrap();
         match &report {
-            atls_core::Report::Tdx(tdx_report) => {
+            atlas_rs::Report::Tdx(tdx_report) => {
                 println!("Verification passed! TCB Status: {}", tdx_report.status);
             }
         }
@@ -233,7 +233,7 @@ mod integration {
         match &result {
             Ok(report) => {
                 match report {
-                    atls_core::Report::Tdx(tdx_report) => {
+                    atlas_rs::Report::Tdx(tdx_report) => {
                         println!("Full verification passed! TCB Status: {}", tdx_report.status);
                     }
                 }
@@ -420,7 +420,7 @@ mod integration {
         app_compose["docker_compose_file"] = json!(get_vllm_docker_compose());
         app_compose["allowed_envs"] = json!(["EKM_SHARED_SECRET", "AUTH_SERVICE_TOKEN"]);
 
-        let policy = atls_core::Policy::DstackTdx(atls_core::DstackTdxPolicy {
+        let policy = atlas_rs::Policy::DstackTdx(atlas_rs::DstackTdxPolicy {
             expected_bootchain: Some(test_bootchain()),
             app_compose: Some(app_compose),
             os_image_hash: Some(TEST_OS_IMAGE_HASH.to_string()),
@@ -430,14 +430,14 @@ mod integration {
             ],
             ..Default::default()
         });
-        let result = atls_core::atls_connect(tcp, TEST_HOST, policy, None).await;
+        let result = atlas_rs::atls_connect(tcp, TEST_HOST, policy, None).await;
 
         // This might fail if app_compose doesn't match - that's expected
         // The important thing is that the verifier runs the full verification
         match &result {
             Ok((_, report)) => {
                 match report {
-                    atls_core::Report::Tdx(tdx_report) => {
+                    atlas_rs::Report::Tdx(tdx_report) => {
                         println!("atls_connect full verification passed! TCB Status: {}", tdx_report.status);
                     }
                 }
@@ -459,7 +459,7 @@ mod integration {
         app_compose["docker_compose_file"] = json!(get_vllm_docker_compose());
         app_compose["allowed_envs"] = json!(["EKM_SHARED_SECRET", "AUTH_SERVICE_TOKEN"]);
 
-        let policy = atls_core::Policy::DstackTdx(atls_core::DstackTdxPolicy {
+        let policy = atlas_rs::Policy::DstackTdx(atlas_rs::DstackTdxPolicy {
             expected_bootchain: Some(test_bootchain()),
             app_compose: Some(app_compose),
             os_image_hash: Some(TEST_OS_IMAGE_HASH.to_string()),
@@ -469,7 +469,7 @@ mod integration {
             ],
             ..Default::default()
         });
-        let result = atls_core::atls_connect(
+        let result = atlas_rs::atls_connect(
             tcp,
             TEST_HOST,
             policy,
@@ -480,7 +480,7 @@ mod integration {
         match &result {
             Ok((_, report)) => {
                 match report {
-                    atls_core::Report::Tdx(tdx_report) => {
+                    atlas_rs::Report::Tdx(tdx_report) => {
                         println!("atls_connect with ALPN passed! TCB Status: {}", tdx_report.status);
                     }
                 }
@@ -498,7 +498,7 @@ mod integration {
             .await
             .expect("Failed to connect TCP");
 
-        let result = atls_core::connect::tls_handshake(tcp, TEST_HOST, None).await;
+        let result = atlas_rs::connect::tls_handshake(tcp, TEST_HOST, None).await;
 
         assert!(
             result.is_ok(),

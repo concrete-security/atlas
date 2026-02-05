@@ -1,13 +1,23 @@
-# wasm (browser client)
+# atlas-wasm
 
-WASM bindings for aTLS attested connections. The module performs TLS 1.3 inside WASM and uses WebSocket tunnels via a proxy.
+attested TLS (aTLS) connections for Wasm. Connect securely to Trusted Execution Environments (TEEs) from the browser.
+
+> **For aTLS protocol details, policy configuration, and security features, see [core/README.md](../core/README.md)**
+
+## Installation
+
+```bash
+npm install @concrete-security/atlas-wasm
+```
+
+The package includes prebuilt WASM binaries for browser use.
 
 ## Architecture
 
 The WASM module handles **attested TLS + HTTP/1.1 protocol** (including chunked transfer encoding for streaming LLM responses).
 
 ```
-Browser (atls-fetch.js)          WASM (atls_wasm)           Proxy              TEE
+Browser (atls-fetch.js)          WASM (atlas_wasm)           Proxy              TEE
         │                               │                       │                  │
         │──── AtlsHttp.connect ───────►│                       │                  │
         │                               │──── WebSocket ───────►│                  │
@@ -19,8 +29,12 @@ Browser (atls-fetch.js)          WASM (atls_wasm)           Proxy              T
         │◄─── {status,headers,body} ────│◄──── HTTP/1.1 res ────│◄──── raw ────────│
 ```
 
+A proxy is required since the Browser/Wasm environment doesn't have a socket API. So we implement aTLS over a WebSocket-to-TCP tunnel.
 
-## Building
+
+## Building from Source
+
+The npm package includes prebuilt WASM binaries. To build from source:
 
 ```bash
 # From repo root
@@ -41,13 +55,14 @@ make build-wasm
 Fetch-compatible API (HTTP handling in Rust/WASM):
 
 ```javascript
-import { init, createAtlsFetch } from "./pkg/atls-fetch.js";
+import { init, createAtlsFetch } from "@concrete-security/atlas-wasm";
 
 await init();
 
 const fetch = createAtlsFetch({
   proxyUrl: "ws://127.0.0.1:9000",
   targetHost: "vllm.example.com",
+  policy: { type: "dstack_tdx" },  // Required: verification policy
   onAttestation: (att) => console.log("TEE:", att.teeType)
 });
 
@@ -67,7 +82,7 @@ console.log(response.attestation); // { trusted: true, teeType: "Tdx", ... }
 HTTP client with streaming body support:
 
 ```javascript
-import init, { AtlsHttp } from "./pkg/atls_wasm.js";
+import init, { AtlsHttp } from "@concrete-security/atlas-wasm";
 
 await init();
 
@@ -93,7 +108,7 @@ const reader = result.body.getReader();
 Direct access to the raw attested TLS stream (no HTTP handling):
 
 ```javascript
-import init, { AttestedStream } from "./pkg/atls_wasm.js";
+import init, { AttestedStream } from "@concrete-security/atlas-wasm";
 
 await init();
 
@@ -111,17 +126,24 @@ const reader = stream.readable.getReader();
 
 ## Proxy
 
-The `proxy/` directory contains a WebSocket-to-TCP forwarder:
+Browser deployments require a WebSocket-to-TCP proxy since browsers cannot make raw TCP connections.
+
+**Quick Start:**
 
 ```bash
 # Required: set allowlist for security
 export ATLS_PROXY_ALLOWLIST="vllm.example.com:443,other.tee.com:443"
 export ATLS_PROXY_LISTEN="127.0.0.1:9000"
 
-cargo run -p atls-proxy
+cargo run -p atlas-proxy
 ```
 
-The proxy just forwards bytes - it doesn't terminate TLS. All encryption and attestation verification happens in the browser.
+**Key Points:**
+- Proxy only forwards bytes (no TLS termination)
+- All encryption and attestation verification happens in the browser
+- Allowlist is required for security (prevents SSRF attacks)
+
+For detailed configuration, deployment patterns, and security considerations, see [proxy/README.md](proxy/README.md).
 
 ## Demo
 
@@ -137,3 +159,32 @@ make demo-wasm
 The demo shows:
 1. Connecting to a non-TEE server (google.com) fails attestation
 2. Connecting to a real TEE server succeeds with valid attestation
+
+## Policy Configuration
+
+Policies control what attestations are accepted. Configure via the `policy` option:
+
+```javascript
+const fetch = createAtlsFetch({
+  proxyUrl: "ws://127.0.0.1:9000",
+  targetHost: "vllm.example.com",
+  policy: {
+    type: "dstack_tdx",
+    allowed_tcb_status: ["UpToDate", "SWHardeningNeeded"],
+    expected_bootchain: {
+      mrtd: "b24d3b24...",
+      rtmr0: "24c15e08...",
+      rtmr1: "6e1afb74...",
+      rtmr2: "89e73ced..."
+    }
+  }
+})
+```
+
+For complete policy field descriptions and verification flow, see [core/README.md#policy-configuration](../core/README.md#policy-configuration).
+
+## Protocol Details
+
+Browser WASM bindings follow the same aTLS protocol as other platforms.
+
+For detailed protocol specification and security features, see [core/README.md#protocol-specification](../core/README.md#protocol-specification).

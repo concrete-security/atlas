@@ -1,5 +1,5 @@
 [package]
-name = "atls-node"
+name = "atlas-node"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
@@ -9,7 +9,7 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
-atls-core = { path = "../core" }
+atlas-rs = { path = "../core" }
 napi = { version = "2.16", default-features = false, features = ["napi4", "tokio_rt", "serde-json"] }
 napi-derive = { version = "2.16", features = ["type-def"] }
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "net", "io-util"] }

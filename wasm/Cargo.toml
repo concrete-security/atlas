@@ -1,6 +1,6 @@
 [package]
-name = "atls-wasm"
-version = "0.1.0"
+name = "atlas-wasm"
+version = "0.2.0"
 edition = "2021"
 license = "MIT"
 
@@ -9,13 +9,15 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = ["debug-logging"]
-# Enable debug logging (forwarded to atls-core)
-debug-logging = ["atls-core/debug-logging"]
+# Enable debug logging (forwarded to atlas)
+debug-logging = ["atlas-rs/debug-logging"]
 
 [dependencies]
-atls-core = { path = "../core" }
+atlas-rs = { path = "../core" }
 futures = "0.3"
 wasm-bindgen = "0.2"
+# Ring needs explicit WASM feature for wasm32 targets
+ring = { version = "0.17", features = ["wasm32_unknown_unknown_js"] }
 wasm-bindgen-futures = "0.4"
 serde = { workspace = true }
 serde-wasm-bindgen = "0.6"

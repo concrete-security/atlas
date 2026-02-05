@@ -46,7 +46,7 @@
  * ```
  */
 
-import init, { AttestedStream, AtlsHttp, mergeWithDefaultAppCompose } from "./atls_wasm.js";
+import init, { AttestedStream, AtlsHttp, mergeWithDefaultAppCompose } from "./atlas_wasm.js";
 
 // ============================================================================
 // WASM Initialization

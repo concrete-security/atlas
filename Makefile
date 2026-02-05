@@ -7,7 +7,7 @@ help:
 	@echo "Available targets:"
 	@echo "  make test           # run native Rust tests (core, proxy)"
 	@echo "  make test-proxy     # run proxy unit and integration tests"
-	@echo "  make test-wasm      # cargo check atls-wasm for wasm32 target"
+	@echo "  make test-wasm      # cargo check atlas-wasm for wasm32 target"
 	@echo "  make test-wasm-node # run WASM tests in Node.js via wasm-pack"
 	@echo "  make test-node      # run Node.js binding tests"
 	@echo "  make test-all       # run all tests (native + wasm + node)"
@@ -23,15 +23,15 @@ help:
 
 # Native Rust tests (excludes WASM crate which needs special toolchain)
 test:
-	$(CARGO) test --workspace --exclude atls-wasm
+	$(CARGO) test --workspace --exclude atlas-wasm
 
 # Proxy unit and integration tests
 test-proxy:
-	$(CARGO) test -p atls-proxy
+	$(CARGO) test -p atlas-proxy
 
 # Check WASM crate compiles for wasm32 target
 test-wasm:
-	$(CARGO) check -p atls-wasm --target wasm32-unknown-unknown
+	$(CARGO) check -p atlas-wasm --target wasm32-unknown-unknown
 
 # Run WASM tests in Node.js via wasm-pack
 test-wasm-node:
@@ -46,7 +46,7 @@ test-all: test test-wasm test-node
 
 # Build all native crates
 build:
-	$(CARGO) build --workspace --exclude atls-wasm
+	$(CARGO) build --workspace --exclude atlas-wasm
 
 # Setup WASM toolchain (macOS only - installs LLVM with wasm32 support)
 setup-wasm:
@@ -96,6 +96,6 @@ demo-wasm:
 	@echo ""
 	@trap 'kill 0' EXIT; \
 	ATLS_PROXY_TARGET="$(PROXY_TARGET)" ATLS_PROXY_ALLOWLIST="$(PROXY_ALLOWLIST)" ATLS_PROXY_LISTEN="127.0.0.1:$(PROXY_PORT)" \
-		$(CARGO) run -p atls-proxy & \
+		$(CARGO) run -p atlas-proxy & \
 	sleep 1 && cd wasm && python3 -m http.server $(DEMO_PORT) & \
 	wait

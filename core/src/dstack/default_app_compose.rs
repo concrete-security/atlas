@@ -263,7 +263,7 @@ pub fn merge_json(base: &mut Value, overlay: &Value) {
 ///
 /// ```
 /// use serde_json::json;
-/// use atls_core::dstack::merge_with_default_app_compose;
+/// use atlas_rs::dstack::merge_with_default_app_compose;
 ///
 /// let user_compose = json!({
 ///     "docker_compose_file": "services:\n  app:\n    image: myapp:latest",

@@ -1,4 +1,17 @@
-name: Publish aTLS Core Crate
+# Publish atlas-rs to crates.io
+#
+# How to release:
+#   1. Update version in core/Cargo.toml
+#   2. Commit and push the change
+#   3. Run this workflow with dry_run=false
+#
+# The workflow will:
+#   - Package the crate
+#   - Create git tag: core/<version>
+#   - Create draft GitHub release
+#   - Publish to crates.io
+
+name: Publish Atlas Core Crate
 
 on:
   workflow_dispatch:
@@ -27,7 +40,7 @@ jobs:
           cargo package
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: atls-core-crate
+          name: atlas-rs-crate
           path: target/package/*.crate
       - name: generate hash
         id: hash
@@ -72,11 +85,12 @@ jobs:
           cargo publish --token "${CRATES_TOKEN}" ${DRY_RUN}
 
       - name: Create draft release
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           VERSION=$(grep '^version = ' core/Cargo.toml | cut -d '"' -f2)
-          export VERSION
-          TAG="atls-core-v${VERSION}"
-          export TAG
+          TAG="core/${VERSION}"
           echo "version: ${VERSION}"
           echo "tag: ${TAG}"
 
@@ -84,18 +98,18 @@ jobs:
           git push origin "${TAG}"
 
           gh release create --draft --repo ${{ github.repository }} \
-          --verify-tag "${TAG}" \
-          --title "${TAG}" \
-          target/package/*.crate
-        env:
-          GH_TOKEN: ${{ github.token }}
+            --verify-tag "${TAG}" \
+            --title "atlas-rs v${VERSION}" \
+            --notes "Published atlas-rs@${VERSION} to crates.io" \
+            target/package/*.crate
 
       - name: Generate hash
+        if: ${{ !inputs.dry_run }}
         id: published_hash
         run: cd target/package && echo "pub_hash=$(sha256sum ./*.crate | base64 -w0)" >> "${GITHUB_OUTPUT}"
 
       - name: Compare hashes
-        if: ${{ needs.package.outputs.hash != steps.published_hash.outputs.pub_hash }}
+        if: ${{ !inputs.dry_run && needs.package.outputs.hash != steps.published_hash.outputs.pub_hash }}
         run: |
           echo "ERROR: Published crate hash does not match the packaged crate hash!"
           exit 1

@@ -1,12 +1,12 @@
 [package]
-name = "atls-core"
-version = "0.1.0"
+name = "atlas-rs"
+version = "0.2.0"
 edition = "2021"
 description = "attested TLS (aTLS) core library for verifying TEE attestations over TLS connections"
 license = "MIT"
-repository = "https://github.com/concrete-security/ratls"
+repository = "https://github.com/concrete-security/atlas"
 readme = "README.md"
-keywords = ["tls", "attestation", "tee", "tdx", "confidential-computing", "atls"]
+keywords = ["tls", "attestation", "tee", "atls", "tdx"]
 categories = ["cryptography", "network-programming", "security"]
 
 [features]
@@ -44,6 +44,8 @@ getrandom = { version = "0.2", features = ["js"] }
 futures = { version = "0.3", features = ["std"] }
 rustls = { version = "0.23", default-features = false, features = ["logging", "std", "tls12", "ring"] }
 futures-rustls = { version = "0.26", default-features = false, features = ["ring"] }
+# Ring needs explicit WASM feature for wasm32 targets
+ring = { version = "0.17", features = ["wasm32_unknown_unknown_js"] }
 js-sys = "0.3"
 console_log = "1"
 

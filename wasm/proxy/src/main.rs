@@ -107,7 +107,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     let listener = TcpListener::bind(&listen_addr).await?;
-    eprintln!("atls-proxy listening on {listen_addr}, default target {target}");
+    eprintln!("atlas-proxy listening on {listen_addr}, default target {target}");
 
     loop {
         let (stream, peer) = listener.accept().await?;

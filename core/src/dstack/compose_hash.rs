@@ -19,7 +19,7 @@ use sha2::{Digest, Sha256};
 ///
 /// ```
 /// use serde_json::json;
-/// use atls_core::dstack::compose_hash::get_compose_hash;
+/// use atlas_rs::dstack::compose_hash::get_compose_hash;
 ///
 /// let compose = json!({
 ///     "docker_compose_file": "version: '3'\nservices:\n  app:\n    image: myapp",

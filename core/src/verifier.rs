@@ -32,7 +32,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> AsyncByteStream for T {}
 /// # Example
 ///
 /// ```
-/// use atls_core::Report;
+/// use atlas_rs::Report;
 ///
 /// fn handle_report(report: Report) {
 ///     match report {
@@ -118,7 +118,7 @@ pub trait AtlsVerifier: Sync {
 /// # Example
 ///
 /// ```
-/// use atls_core::{DstackTdxPolicy, IntoVerifier};
+/// use atlas_rs::{DstackTdxPolicy, IntoVerifier};
 ///
 /// let policy = DstackTdxPolicy::dev();
 /// let verifier = policy.into_verifier().unwrap();
@@ -143,7 +143,7 @@ pub trait IntoVerifier {
 /// # Example
 ///
 /// ```
-/// use atls_core::{Policy, DstackTdxPolicy, AtlsVerifier};
+/// use atlas_rs::{Policy, DstackTdxPolicy, AtlsVerifier};
 ///
 /// let policy = Policy::DstackTdx(DstackTdxPolicy::dev());
 /// let verifier = policy.into_verifier().unwrap();
