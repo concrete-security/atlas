@@ -56,6 +56,18 @@ pub enum AtlsVerificationError {
     #[error("TCB status {status} not allowed (allowed: {allowed:?})")]
     TcbStatusNotAllowed { status: String, allowed: Vec<String> },
 
+    /// TCB info could not be determined or parsed.
+    #[error("TCB info error: {0}")]
+    TcbInfoError(String),
+
+    /// Grace period expired for an OutOfDate platform.
+    #[error("grace period expired for status {status} (tcb_date: {tcb_date}, grace_period_secs: {grace_period_secs})")]
+    GracePeriodExpired {
+        status: String,
+        tcb_date: String,
+        grace_period_secs: u64,
+    },
+
     /// Report data mismatch - potential replay attack.
     #[error("report data mismatch: expected {expected}, got {actual}. Possible replay/relay attack.")]
     ReportDataMismatch { expected: String, actual: String },

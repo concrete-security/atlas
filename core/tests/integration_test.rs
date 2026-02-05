@@ -119,9 +119,16 @@ fn test_expected_bootchain_values() {
 mod integration {
     use super::*;
     use atlas_rs::AtlsVerifier;
+    use atlas_rs::{DstackTdxPolicy, Policy};
+    use atlas_rs::tdx::grace_period::enforce_grace_period;
+    use dcap_qvl::collateral::get_collateral;
+    use dcap_qvl::quote::Quote;
+    use dcap_qvl::verify::verify;
+    use dstack_sdk_types::dstack::GetQuoteResponse;
     use rustls::pki_types::ServerName;
     use rustls::crypto::ring::default_provider;
     use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
     use tokio::net::TcpStream;
     use tokio_rustls::rustls::{self, ClientConfig, RootCertStore};
     use tokio_rustls::TlsConnector;
@@ -171,6 +178,31 @@ mod integration {
         Ok((stream, peer_cert, session_ekm))
     }
 
+    #[derive(Debug, serde::Deserialize)]
+    struct QuoteEndpointResponse {
+        quote: GetQuoteResponse,
+    }
+
+    async fn get_quote_over_http(
+        nonce: &[u8; 32],
+        host: &str,
+    ) -> Result<GetQuoteResponse, Box<dyn std::error::Error + Send + Sync>> {
+        let body = serde_json::json!({
+            "nonce_hex": hex::encode(nonce)
+        });
+
+        let url = format!("https://{}/tdx_quote", host);
+        let response = reqwest::Client::new()
+            .post(url)
+            .json(&body)
+            .send()
+            .await?
+            .error_for_status()?;
+
+        let response: QuoteEndpointResponse = response.json().await?;
+        Ok(response.quote)
+    }
+
     /// Test verifier with runtime verification disabled.
     /// This is the simplest test - it only verifies DCAP quote and RTMR replay.
     #[tokio::test]
@@ -201,6 +233,86 @@ mod integration {
         }
 
         println!("Verification with disabled runtime verification passed!");
+    }
+
+    /// Test that a policy with grace_period set still verifies when the platform is not OutOfDate.
+    #[tokio::test]
+    async fn test_policy_grace_period_allows_non_outofdate() {
+        let tcp = tokio::net::TcpStream::connect(format!("{}:443", TEST_HOST))
+            .await
+            .expect("Failed to connect TCP");
+
+        let policy = Policy::DstackTdx(DstackTdxPolicy {
+            grace_period: Some(0),
+            allowed_tcb_status: vec![
+                "UpToDate".to_string(),
+                "OutOfDate".to_string(),
+            ],
+            disable_runtime_verification: true,
+            ..Default::default()
+        });
+
+        let result = atlas_rs::atls_connect(tcp, TEST_HOST, policy, None).await;
+        assert!(
+            result.is_ok(),
+            "Expected verification to succeed with grace_period set: {:?}",
+            result.err()
+        );
+    }
+
+    /// Test grace period behavior by forcing an OutOfDate status on a real quote.
+    #[tokio::test]
+    async fn test_grace_period_outofdate_paths() {
+        let mut nonce = [0u8; 32];
+        rand::Rng::fill(&mut rand::thread_rng(), &mut nonce);
+
+        let quote_response = get_quote_over_http(&nonce, TEST_HOST)
+            .await
+            .expect("Failed to fetch quote");
+
+        let quote_bytes = quote_response
+            .decode_quote()
+            .expect("Failed to decode quote");
+        let quote = Quote::parse(&quote_bytes).expect("Failed to parse quote");
+
+        let collateral = get_collateral(
+            atlas_rs::dstack::policy::DEFAULT_PCCS_URL,
+            &quote_bytes,
+        )
+        .await
+        .expect("Failed to fetch collateral");
+
+        let now_secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards")
+            .as_secs();
+
+        let mut report = verify(&quote_bytes, &collateral, now_secs)
+            .expect("DCAP verification failed");
+
+        // Set it as OutOfDate to test grace period logic
+        report.status = "OutOfDate".to_string();
+
+        // Valid window: use a time before the TCB date to guarantee success.
+        let valid = enforce_grace_period(&report, &quote, &collateral, Some(0), 0);
+        assert!(valid.is_ok(), "Expected grace period to be valid");
+        // Same as above but with a non-zero grace period
+        let valid = enforce_grace_period(&report, &quote, &collateral, Some(60*60*24), 0);
+        assert!(valid.is_ok(), "Expected grace period to be valid");
+
+        // Expired window: use a far-future time to guarantee expiration.
+        let expired = enforce_grace_period(
+            &report,
+            &quote,
+            &collateral,
+            Some(3600 * 24 * 30), // 30 days grace period
+            (i64::MAX / 16) as u64, // div 16 to avoid overflow
+        );
+        assert!(
+            matches!(expired, Err(AtlsVerificationError::GracePeriodExpired { .. })),
+            "Expected GracePeriodExpired, got: {:?}",
+            expired
+        );
     }
 
     /// Test verifier with bootchain verification.
