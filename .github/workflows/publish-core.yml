@@ -104,8 +104,7 @@ jobs:
           gh release create --draft --repo ${{ github.repository }} \
             --verify-tag "${TAG}" \
             --title "atlas-rs v${VERSION}" \
-            --notes "Published atlas-rs@${VERSION} to crates.io" \
-            target/package/*.crate
+            --notes "Published atlas-rs@${VERSION} to crates.io"
 
       - name: Generate hash
         if: ${{ !inputs.dry_run }}
