@@ -2,7 +2,7 @@
 //!
 //! Hyper 1.x uses its own `hyper::rt::{Read, Write}` traits instead of tokio's.
 //! This module provides a wrapper that adapts `futures::io::{AsyncRead, AsyncWrite}`
-//! (used by atlas-core on WASM) to hyper's traits.
+//! (used by atlas-rs on WASM) to hyper's traits.
 
 use futures::io::{AsyncRead, AsyncWrite};
 use hyper::rt::{Read, Write};

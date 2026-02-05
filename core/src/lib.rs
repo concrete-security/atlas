@@ -26,7 +26,7 @@
 //! # High-Level Example
 //!
 //! ```no_run
-//! use atlas_core::{atls_connect, Policy, DstackTdxPolicy};
+//! use atlas_rs::{atls_connect, Policy, DstackTdxPolicy};
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! // Connect with development policy (relaxed TCB status)
@@ -36,7 +36,7 @@
 //!
 //! // Access report data via pattern matching
 //! match &report {
-//!     atlas_core::Report::Tdx(tdx_report) => {
+//!     atlas_rs::Report::Tdx(tdx_report) => {
 //!         println!("TCB Status: {}", tdx_report.status);
 //!     }
 //! }
@@ -47,8 +47,8 @@
 //! # Low-Level Example
 //!
 //! ```no_run
-//! use atlas_core::{DstackTDXVerifier, AtlsVerifier};
-//! use atlas_core::tdx::ExpectedBootchain;
+//! use atlas_rs::{DstackTDXVerifier, AtlsVerifier};
+//! use atlas_rs::tdx::ExpectedBootchain;
 //! use serde_json::json;
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
@@ -73,7 +73,7 @@
 //! # let session_ekm: Vec<u8> = todo!();
 //! let report = verifier.verify(&mut tls_stream, &peer_cert, &session_ekm, "hostname").await?;
 //! match &report {
-//!     atlas_core::Report::Tdx(tdx_report) => {
+//!     atlas_rs::Report::Tdx(tdx_report) => {
 //!         println!("TCB Status: {}", tdx_report.status);
 //!     }
 //! }

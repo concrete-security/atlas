@@ -1,4 +1,4 @@
-# Publish atlas-core to crates.io
+# Publish atlas-rs to crates.io
 #
 # How to release:
 #   1. Update version in core/Cargo.toml
@@ -40,7 +40,7 @@ jobs:
           cargo package
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: atlas-core-crate
+          name: atlas-rs-crate
           path: target/package/*.crate
       - name: generate hash
         id: hash
@@ -99,8 +99,8 @@ jobs:
 
           gh release create --draft --repo ${{ github.repository }} \
             --verify-tag "${TAG}" \
-            --title "atlas-core v${VERSION}" \
-            --notes "Published atlas-core@${VERSION} to crates.io" \
+            --title "atlas-rs v${VERSION}" \
+            --notes "Published atlas-rs@${VERSION} to crates.io" \
             target/package/*.crate
 
       - name: Generate hash

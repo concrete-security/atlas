@@ -20,7 +20,7 @@ Atlas is a library implementing an attested TLS (aTLS) protocol. It delivers ver
 Choose your platform:
 - **Node.js**: `npm install @concrete-security/atlas-node` → [See node/README.md](node/README.md)
 - **Browser/WASM**: `npm install @concrete-security/atlas-wasm` → [See wasm/README.md](wasm/README.md)
-- **Rust**: `cargo add atlas-core` → [See core/README.md](core/README.md)
+- **Rust**: `cargo add atlas-rs` → [See core/README.md](core/README.md)
 
 For protocol details, policy configuration, and security features, see [core/README.md](core/README.md).
 

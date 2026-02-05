@@ -9,7 +9,7 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
-atlas-core = { path = "../core" }
+atlas-rs = { path = "../core" }
 napi = { version = "2.16", default-features = false, features = ["napi4", "tokio_rt", "serde-json"] }
 napi-derive = { version = "2.16", features = ["type-def"] }
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "net", "io-util"] }

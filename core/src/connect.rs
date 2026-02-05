@@ -117,14 +117,14 @@ where
 /// # Example
 ///
 /// ```no_run
-/// use atlas_core::{atls_connect, Policy, DstackTdxPolicy};
+/// use atlas_rs::{atls_connect, Policy, DstackTdxPolicy};
 ///
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 /// let tcp = tokio::net::TcpStream::connect("tee.example.com:443").await?;
 /// let policy = Policy::DstackTdx(DstackTdxPolicy::dev());
 /// let (tls_stream, report) = atls_connect(tcp, "tee.example.com", policy, None).await?;
 /// match &report {
-///     atlas_core::Report::Tdx(tdx_report) => {
+///     atlas_rs::Report::Tdx(tdx_report) => {
 ///         println!("TCB Status: {}", tdx_report.status);
 ///     }
 /// }

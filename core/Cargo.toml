@@ -1,5 +1,5 @@
 [package]
-name = "atlas-core"
+name = "atlas-rs"
 version = "0.1.0"
 edition = "2021"
 description = "attested TLS (aTLS) core library for verifying TEE attestations over TLS connections"

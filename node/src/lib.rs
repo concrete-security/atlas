@@ -2,7 +2,7 @@ use bytes::{Bytes, BytesMut};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use once_cell::sync::Lazy;
-use atlas_core::{
+use atlas_rs::{
     dstack::merge_with_default_app_compose, atls_connect as core_atls_connect, Policy, Report,
     TlsStream as CoreTlsStream,
 };

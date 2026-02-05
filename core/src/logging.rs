@@ -1,4 +1,4 @@
-//! Logging initialization for atlas-core.
+//! Logging initialization for atlas-rs.
 //!
 //! This module provides cross-platform logging support:
 //! - On native targets: Uses `env_logger`, controlled by `DEBUG_ATLS` env var
@@ -46,7 +46,7 @@ fn init_impl() {
     };
 
     env_logger::Builder::new()
-        .filter_module("atlas_core", level)
+        .filter_module("atlas_rs", level)
         .format_timestamp_millis()
         .try_init()
         .ok(); // Ignore error if already initialized

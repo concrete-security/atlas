@@ -69,8 +69,8 @@ impl Default for DstackTDXVerifierConfig {
 /// # Example
 ///
 /// ```
-/// use atlas_core::dstack::{DstackTDXVerifierBuilder};
-/// use atlas_core::tdx::ExpectedBootchain;
+/// use atlas_rs::dstack::{DstackTDXVerifierBuilder};
+/// use atlas_rs::tdx::ExpectedBootchain;
 /// use serde_json::json;
 ///
 /// let verifier = DstackTDXVerifierBuilder::new()

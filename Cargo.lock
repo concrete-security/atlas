@@ -102,7 +102,35 @@ dependencies = [
 ]
 
 [[package]]
-name = "atlas-core"
+name = "atlas-node"
+version = "0.1.0"
+dependencies = [
+ "atlas-rs",
+ "bytes",
+ "napi",
+ "napi-build",
+ "napi-derive",
+ "once_cell",
+ "rustls",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+]
+
+[[package]]
+name = "atlas-proxy"
+version = "0.0.1"
+dependencies = [
+ "futures-util",
+ "http",
+ "tokio",
+ "tokio-tungstenite",
+ "url",
+]
+
+[[package]]
+name = "atlas-rs"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -131,39 +159,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "atlas-node"
-version = "0.1.0"
-dependencies = [
- "atlas-core",
- "bytes",
- "napi",
- "napi-build",
- "napi-derive",
- "once_cell",
- "rustls",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
- "tokio",
-]
-
-[[package]]
-name = "atlas-proxy"
-version = "0.0.1"
-dependencies = [
- "futures-util",
- "http",
- "tokio",
- "tokio-tungstenite",
- "url",
-]
-
-[[package]]
 name = "atlas-wasm"
 version = "0.1.0"
 dependencies = [
  "async_io_stream",
- "atlas-core",
+ "atlas-rs",
  "bytes",
  "futures",
  "http",

@@ -9,11 +9,11 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = ["debug-logging"]
-# Enable debug logging (forwarded to atlas-core)
-debug-logging = ["atlas-core/debug-logging"]
+# Enable debug logging (forwarded to atlas)
+debug-logging = ["atlas-rs/debug-logging"]
 
 [dependencies]
-atlas-core = { path = "../core" }
+atlas-rs = { path = "../core" }
 futures = "0.3"
 wasm-bindgen = "0.2"
 # Ring needs explicit WASM feature for wasm32 targets

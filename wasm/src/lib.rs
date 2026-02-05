@@ -17,7 +17,7 @@ use futures::AsyncReadExt;
 use http_body_util::{BodyExt, Full};
 use hyper::client::conn::http1;
 use hyper::Request;
-use atlas_core::{dstack::merge_with_default_app_compose, atls_connect, AsyncWriteExt, Policy, TlsStream};
+use atlas_rs::{dstack::merge_with_default_app_compose, atls_connect, AsyncWriteExt, Policy, TlsStream};
 use serde::Serialize;
 use std::{cell::RefCell, rc::Rc};
 use wasm_bindgen::prelude::*;
@@ -150,7 +150,7 @@ impl AttestedStream {
         let readable = create_readable_stream(reader);
 
         let attestation = match &report {
-            atlas_core::Report::Tdx(verified) => AttestationSummary {
+            atlas_rs::Report::Tdx(verified) => AttestationSummary {
                 trusted: true,
                 tee_type: "Tdx".to_string(),
                 tcb_status: verified.status.clone(),
@@ -269,7 +269,7 @@ impl AtlsHttp {
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
 
         let attestation = match &report {
-            atlas_core::Report::Tdx(verified) => AttestationSummary {
+            atlas_rs::Report::Tdx(verified) => AttestationSummary {
                 trusted: true,
                 tee_type: "Tdx".to_string(),
                 tcb_status: verified.status.clone(),

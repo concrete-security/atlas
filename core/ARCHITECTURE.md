@@ -1,6 +1,6 @@
 # aTLS Core Architecture
 
-This document describes the architecture of the `atlas-core` crate, designed for contributors who want to understand the design or extend it with new TEE verifiers.
+This document describes the architecture of the `atlas-rs` crate, designed for contributors who want to understand the design or extend it with new TEE verifiers.
 
 ## Overview
 
