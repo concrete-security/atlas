@@ -110,6 +110,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write
     defaults:
       run:
         working-directory: node
@@ -161,8 +162,11 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          find npm -maxdepth 1 -type d -mindepth 1 -exec npm publish --access public {} \;
-          npm publish --access public
+          for dir in npm/*/; do
+            echo "Publishing $dir"
+            npm publish --provenance --access public "$dir"
+          done
+          npm publish --provenance --access public
 
       - name: Create draft release
         if: ${{ !inputs.dry_run }}
