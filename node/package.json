@@ -58,7 +58,6 @@
   "scripts": {
     "build": "napi build  --js index.cjs --platform --release",
     "build:debug": "napi build --js index.cjs --platform",
-    "prepublishOnly": "napi prepublish -t npm",
     "artifacts": "napi artifacts",
     "test": "node test.mjs",
     "sync-versions": "node scripts/sync-versions.mjs"
