@@ -6,7 +6,7 @@ description = "attested TLS (aTLS) core library for verifying TEE attestations o
 license = "MIT"
 repository = "https://github.com/concrete-security/atlas"
 readme = "README.md"
-keywords = ["tls", "attestation", "tee", "tdx", "confidential-computing", "atls"]
+keywords = ["tls", "attestation", "tee", "atls", "tdx"]
 categories = ["cryptography", "network-programming", "security"]
 
 [features]
