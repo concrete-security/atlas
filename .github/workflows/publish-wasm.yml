@@ -81,8 +81,6 @@ jobs:
 
       - name: Publish to npm
         if: ${{ !inputs.dry_run }}
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --provenance --access public pkg/
 
       - name: Create draft release
