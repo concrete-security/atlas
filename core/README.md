@@ -106,7 +106,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Load policy from JSON
     let policy_json = r#"{
         "type": "dstack_tdx",
-        "allowed_tcb_status": ["UpToDate", "SWHardeningNeeded"],
+        "allowed_tcb_status": ["UpToDate", "OutOfDate"],
+        "grace_period": 2592000,
         "expected_bootchain": {
             "mrtd": "b24d3b24e9e3c16012376b52362ca09856c4adecb709d5fac33addf1c47e193da075b125b6c364115771390a5461e217",
             "rtmr0": "24c15e08c07aa01c531cbd7e8ba28f8cb62e78f6171bf6a8e0800714a65dd5efd3a06bf0cf5433c02bbfac839434b418",
@@ -183,9 +184,13 @@ Policy fields vary by verifier implementation. The `Policy` enum wraps implement
 | `os_image_hash` | SHA256 of Dstack image's sha256sum.txt | Yes (unless disabled) |
 | `app_compose` | Expected application configuration | Yes (unless disabled) |
 | `allowed_tcb_status` | Acceptable TCB statuses (e.g., `["UpToDate"]`) | Yes |
+| `grace_period` | Grace period (seconds) for `OutOfDate` TCB status. `0` means no grace window. | No |
 | `disable_runtime_verification` | Skip runtime checks (default: false) | No |
 | `pccs_url` | Intel PCCS URL (defaults to Phala's) | No |
 | `cache_collateral` | Cache Intel collateral (default: false) | No |
+
+Time-based TCB checks:
+- `grace_period` applies only when the TCB status is `OutOfDate` and requires `OutOfDate` in `allowed_tcb_status`. A value of `0` means no grace window.
 
 ```rust
 use atlas_rs::{Policy, DstackTdxPolicy, ExpectedBootchain};
@@ -209,6 +214,7 @@ let prod_policy = Policy::DstackTdx(DstackTdxPolicy {
         "docker_compose_file": "..."
     })),
     allowed_tcb_status: vec!["UpToDate".into()],
+    grace_period: Some(30 * 24 * 60 * 60),
     ..Default::default()
 });
 
@@ -331,14 +337,15 @@ TCB (Trusted Computing Base) status indicates the security posture of the TEE pl
 
 | Status | Meaning | Production Use |
 |--------|---------|----------------|
-| `UpToDate` | Platform is fully patched | ✅ Recommended |
-| `SWHardeningNeeded` | Software hardening recommended but not critical | ⚠️ Acceptable with risk assessment |
-| `ConfigurationNeeded` | Platform configuration changes recommended | ⚠️ Acceptable with risk assessment |
-| `ConfigurationAndSWHardeningNeeded` | Both configuration and SW hardening needed | ⚠️ Use with caution |
-| `OutOfDate` | Platform has known security vulnerabilities | ❌ Not recommended |
-| `OutOfDateConfigurationNeeded` | Platform is out of date and needs reconfiguration | ❌ Not recommended |
+| `UpToDate` | Platform is fully patched | ✅ Always use |
+| `SWHardeningNeeded` | The platform is up-to-date, but the software (TD/Enclave) requires specific hardening mitigations | ⚠️ Use if you have verified that your software stack implements the necessary code-level mitigations to operate safely on this hardware |
+| `ConfigurationNeeded` | The platform is patched, but the BIOS/hardware configuration does not meet the recommended security baseline | ⚠️ Use if your specific threat model tolerates the configuration risk |
+| `OutOfDate` | Platform TCB level is lower than the latest version released by Intel | ⚠️ Use only if combined with a grace period to allow operations to continue temporarily during patch cycles. |
+| `Revoked` | The processor or signing keys have been compromised and explicitly invalidated by Intel | ❌ Never use |
 
-Configure allowed statuses via `allowed_tcb_status` in your policy. For production, use `["UpToDate"]`. For development/testing, `DstackTdxPolicy::dev()` allows more permissive statuses.
+You can read more [here](https://download.01.org/intel-sgx/latest/dcap-latest/linux/docs/Intel_DCAP_Appraisal_Engine_Developer_Guide_for_Linux.pdf).
+
+Configure allowed statuses via `allowed_tcb_status` in your policy. For production, use `["UpToDate"]`. You can also apply a `grace_period` when you need a limited window for `OutOfDate` platforms. For development/testing, `DstackTdxPolicy::dev()` allows more permissive statuses.
 
 ## Documentation
 

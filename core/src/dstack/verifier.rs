@@ -14,6 +14,7 @@ use sha2::{Digest, Sha256, Sha512};
 use crate::dstack::compose_hash::get_compose_hash;
 use crate::dstack::config::DstackTDXVerifierConfig;
 use crate::error::AtlsVerificationError;
+use crate::tdx::grace_period::enforce_grace_period;
 use crate::verifier::{AsyncByteStream, AsyncReadExt, AsyncWriteExt, AtlsVerifier, Report};
 
 pub use crate::dstack::config::DstackTDXVerifierBuilder;
@@ -189,6 +190,14 @@ impl DstackTDXVerifier {
             "TCB status '{}' allowed: {}",
             report.status, tcb_allowed
         );
+
+        // If TCB status is OutOfDate, check it's within the grace period (if configured)
+        // TODO: enforce_grace_period is currently implemented in a complex manner since
+        // dcap-qvl doesn't expose TCB info or TCB date directly in the VerifiedReport. We have to
+        // extract the TCB date from the quote and collateral manually, which is not ideal.
+        // We should update enforce_grace_period when dcap-qvl adds TCB info to the VerifiedReport.
+        // This would remove almost all the tdx/grace_period.rs code.
+        enforce_grace_period(&report, &parsed_quote, &collateral, self.config.grace_period, now_secs)?;
 
         if !tcb_allowed {
             return Err(AtlsVerificationError::TcbStatusNotAllowed {

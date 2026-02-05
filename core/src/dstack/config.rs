@@ -19,6 +19,11 @@ pub struct DstackTDXVerifierConfig {
     /// Default: `["UpToDate"]`
     pub allowed_tcb_status: Vec<String>,
 
+    /// Grace period (seconds) for OutOfDate platforms.
+    ///
+    /// If set, OutOfDate platforms are only allowed within this window.
+    pub grace_period: Option<u64>,
+
     /// Disable runtime verification (NOT RECOMMENDED).
     ///
     /// When true, bootchain, app_compose, and os_image_hash verification
@@ -53,6 +58,7 @@ impl Default for DstackTDXVerifierConfig {
         Self {
             app_compose: None,
             allowed_tcb_status: vec!["UpToDate".to_string()],
+            grace_period: None,
             disable_runtime_verification: false,
             expected_bootchain: None,
             os_image_hash: None,
@@ -127,6 +133,12 @@ impl DstackTDXVerifierBuilder {
     /// Set the allowed TCB statuses.
     pub fn allowed_tcb_status(mut self, statuses: Vec<String>) -> Self {
         self.config.allowed_tcb_status = statuses;
+        self
+    }
+
+    /// Set the grace period (seconds) for OutOfDate platforms.
+    pub fn grace_period(mut self, seconds: u64) -> Self {
+        self.config.grace_period = Some(seconds);
         self
     }
 
