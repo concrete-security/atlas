@@ -1,131 +1,114 @@
-# AGENTS.md
+# AGENTS.md — Project Instructions For Coding Agents
 
-## Repository Overview
+## What this repo is
 
-**Atlas** (`atlas-rs`) is a multi-platform library for implementing **Attested TLS (aTLS)**. It allows clients to verify that a remote TLS server is running inside a specific Trusted Execution Environment (TEE), specifically Intel TDX via Dstack.
+- Atlas is a multi-platform Attested TLS (aTLS) implementation that verifies TEE evidence after TLS handshake and binds attestation to the TLS session via EKM (RFC 9266).
+- Main deliverables: Rust core crate (`core/`), Node bindings (`node/`), and browser/WASM bindings (`wasm/`).
+- Current production verifier path is Intel TDX via Dstack (SEV-SNP planned).
 
-### Key Capabilities
-
-1. **Attestation Verification:** Validates Intel TDX quotes using Intel DCAP.
-2. **Session Binding:** Binds attestation to the TLS session using Exported Keying Material (EKM) to prevent relay attacks (RFC 9266).
-3. **Policy Enforcement:** Verifies bootchain measurements (MRTD, RTMRs), OS image hashes, and application configuration (Docker Compose).
-4. **Multi-Platform:**
-* **Core:** Pure Rust library (`core/`).
-* **Node.js:** Native bindings via NAPI-RS (`node/`).
-* **Wasm/Browser:** WebAssembly bindings (`wasm/`) requiring a WebSocket proxy.
-
-
-
----
-
-## Directory Structure
-
-| Path | Component | Description |
-| --- | --- | --- |
-| `core/` | **Core Library** | Rust implementation of verification logic, policies, and TLS handling. |
-| `core/src/dstack/` | **Dstack Verifier** | Specific implementation for verifying Dstack-based TEE deployments. |
-| `node/` | **Node.js Bindings** | NAPI-RS bindings exposing `createAtlsFetch` and `createAtlsAgent`. |
-| `wasm/` | **WASM Bindings** | Rust code compiled to WASM for browser usage. |
-| `wasm/proxy/` | **WebSocket Proxy** | Rust binary (`atlas-proxy`) to tunnel browser WebSocket connections to TCP. |
-| `scripts/` | **Scripts** | Version synchronization scripts (`sync-versions.mjs`). |
-
----
-
-## Core Concepts & Terminology
-
-* **aTLS (Attested TLS):** A protocol where the client verifies the server's TEE evidence *after* the TLS handshake but *before* sending sensitive data.
-* **TDX (Trusted Domain Extensions):** Intel's Confidential Computing technology.
-* **Dstack:** The supported TEE orchestrator/runtime.
-* **Measurement Registers:**
-* **MRTD:** Measurement of the initial TD firmware/memory.
-* **RTMR0:** Virtual hardware environment/bios.
-* **RTMR1:** Linux Kernel.
-* **RTMR2:** Kernel command line & Initramfs.
-* **RTMR3:** Runtime measurements (App Compose, TLS Cert, OS Image).
-
-
-* **EKM (Exported Keying Material):** A cryptographic secret derived from the TLS master secret, unique to the session. Used to bind the TDX Quote to the TLS connection.
-* **PCCS:** Provisioning Certificate Caching Service (Intel). Used to fetch verification collateral.
-
----
-
-## Development Patterns
-
-### 1. Verification Logic (`core/`)
-
-The core logic resides in `core/src/verifier.rs` and `core/src/dstack/verifier.rs`.
-
-* **Trait:** `AtlsVerifier` is the main trait. It has an async `verify` method.
-* **Platform Abstraction:** Code is conditionally compiled for `tokio` (Native) vs `futures` (WASM).
-* `#[cfg(not(target_arch = "wasm32"))]`: Requires `Send + Sync`.
-* `#[cfg(target_arch = "wasm32")]`: `Send` is not required (single-threaded JS runtime).
-
-
-
-### 2. Adding a New Verifier
-
-To add a new TEE type (e.g., SEV-SNP):
-
-1. Define configuration in `core/src/<tee>/config.rs`.
-2. Implement `IntoVerifier` for the policy in `core/src/<tee>/policy.rs`.
-3. Implement `AtlsVerifier` in `core/src/<tee>/verifier.rs`.
-4. Register in `core/src/policy.rs` (`Policy` enum) and `core/src/verifier.rs` (`Verifier` and `Report` enums).
-
-### 3. Node.js Bindings (`node/`)
-
-* Uses `napi-rs`.
-* Exposes `atlsConnect` which returns a raw TCP socket ID.
-* `atls-fetch.js` wraps this socket in a Node `https.Agent`.
-* **Constraint:** Ensure `package.json` versions sync with `Cargo.toml`.
-
-### 4. Wasm Bindings (`wasm/`)
-
-* Uses `wasm-bindgen`.
-* **Networking:** Browsers cannot do raw TCP.
-* Client uses `WsMeta` to connect to a local proxy.
-* Proxy (`wasm/proxy`) converts WebSocket -> TCP to the TEE.
-* TLS is end-to-end (Browser -> Proxy -> TEE). The proxy **cannot** decrypt traffic.
-
-
-
----
-
-## Build & Test Commands
-
-Use the `Makefile` in the root directory.
-
-| Task | Command | Notes |
-| --- | --- | --- |
-| **Test All** | `make test-all` | Runs Core, Wasm (in Node), and Node binding tests. |
-| **Build Core** | `cargo build -p atlas-rs` |  |
-| **Build Node** | `make build-node` | Requires `pnpm`. |
-| **Build Wasm** | `make build-wasm` | Requires `wasm-pack`. |
-| **Build Proxy** | `cargo build -p atlas-proxy` |  |
-| **Run Proxy** | `cargo run -p atlas-proxy` | Set `ATLS_PROXY_ALLOWLIST` env var first. |
-
----
-
-## Critical Files for Context
-
-* `core/ARCHITECTURE.md`: Detailed data flow and trait hierarchy.
-* `core/BOOTCHAIN-VERIFICATION.md`: How to calculate expected hashes for `dstack`.
-* `core/src/dstack/verifier.rs`: The actual implementation of the verification steps (Quote -> Event Log -> Bootchain -> App Config).
-* `node/atls-fetch.js`: The user-facing API for Node.js.
-
-## Version Management
-
-When updating versions, do **not** manually edit `package.json` files in `node/npm/`.
-Use the script:
+## Quickstart (copy/paste)
 
 ```bash
-node node/scripts/sync-versions.mjs <new-version>
+# Prereqs
+# - Rust stable (Node build path needs Rust 1.88+)
+# - Node >=18 (CI uses 20), pnpm 10.x
+# - wasm-pack for wasm targets
+# - macOS wasm: make setup-wasm
 
+# Fast verification
+make test
+make test-wasm
+cargo fmt --all --check
+cargo clippy --workspace --exclude atlas-wasm
+
+# Full verification (closest CI parity)
+make test-all
+make test-wasm-node
+
+# Build outputs
+make build
+make build-node
+make build-wasm
 ```
 
-Then update `core/Cargo.toml` and `wasm/package.json` manually.
+## Repo map (look here first)
 
-## Common Pitfalls
+- `core/src/connect.rs`: high-level entrypoint `atls_connect(...)`.
+- `core/src/verifier.rs`: verifier traits and runtime dispatch enums.
+- `core/src/policy.rs`: serde-tagged `Policy` enum.
+- `core/src/dstack/`: Intel TDX verifier implementation.
+- `node/src/lib.rs`: NAPI-RS bindings source.
+- `node/atls-fetch.js`: user-facing Node API wrapper.
+- `wasm/src/lib.rs`: WASM bindings entrypoint.
+- `wasm/proxy/`: WebSocket-to-TCP proxy for browser path.
+- `core/ARCHITECTURE.md`: architecture and trait flow.
+- `core/BOOTCHAIN-VERIFICATION.md`: expected measurement derivation.
 
-1. **Bootchain Mismatch:** `MRTD` and `RTMR` values change based on hardware config (CPU count, RAM). Tests using hardcoded hashes will fail if the backend infrastructure changes.
-2. **WASM vs Native Async:** `core` uses `tokio` traits for Native and `futures` traits for WASM. Always check `target_arch` feature gates when modifying I/O logic.
-3. **Proxy Allowlist:** The `atlas-proxy` rejects connections by default. Always configure `ATLS_PROXY_ALLOWLIST` during testing.
+Generated files (avoid direct edits):
+- `node/index.cjs` and `node/index.d.ts` are generated by `pnpm build`.
+- `node/npm/*/package.json` is generated by version sync tooling.
+- `wasm/pkg/` is generated by `make build-wasm`.
+
+## Coding standards
+
+- Language/runtime:
+  - Rust stable for core development.
+  - Rust 1.88+ required for Node binding build path.
+  - Node >=18, pnpm 10.x.
+- Formatting: `cargo fmt --all --check`.
+- Linting: `cargo clippy --workspace --exclude atlas-wasm`.
+- Public API changes:
+  - Preserve backward compatibility unless change is explicitly intended.
+  - Update docs/examples whenever public APIs change.
+  - Keep changes aligned with existing module patterns and naming.
+
+## Agent-verifiable workflow
+
+- Prefer `Makefile` targets over ad-hoc commands.
+- Use deterministic local checks:
+  - Fast: `make test`, `make test-wasm`.
+  - Full: `make test-all`, `make test-wasm-node`.
+- For targeted debugging:
+  - `cargo test -p atlas-rs <test_name>`
+  - `cargo test -p atlas-proxy <test_name>`
+- Keep network-dependent tests out of default verification paths unless explicitly required.
+
+## Definition of done
+
+1. Relevant tests pass for touched areas.
+2. `make test` passes.
+3. `make test-wasm` passes.
+4. `cargo fmt --all --check` passes.
+5. `cargo clippy --workspace --exclude atlas-wasm` passes.
+6. If `node/` changed: `make build-node` and `make test-node` pass.
+7. If `wasm/` changed: `make build-wasm` and `make test-wasm-node` pass.
+8. If public behavior changed, docs/examples are updated in the same change.
+
+## Safety and security
+
+- Never commit secrets.
+- Treat remote-provided quotes, logs, and certificates as untrusted input.
+- Never log EKM, private keys, or full quote/certificate blobs.
+- `disable_runtime_verification` is for local testing only; do not use in production examples.
+- Do not run destructive commands unless explicitly requested.
+- Proxy must use `ATLS_PROXY_ALLOWLIST`; default-deny behavior is expected.
+
+## Architecture constraints
+
+- Keep native and wasm paths aligned when changing verifier or I/O code:
+  - Native uses `tokio` + `Send/Sync` constraints.
+  - WASM uses `futures` and `#[cfg(target_arch = "wasm32")]` variants.
+- Changes touching attestation flow should preserve policy -> verifier -> report boundaries.
+- Read `core/ARCHITECTURE.md` before refactoring core verification flow.
+
+## Versioning and release-safe edits
+
+- Do not manually edit `node/npm/*/package.json`.
+- Use `cd node && pnpm sync-versions <new-version>` for Node package version sync.
+- Then update `core/Cargo.toml` and `wasm/package.json` as needed.
+
+## AGENTS.md maintenance (required)
+
+- If you change any setup/build/test/lint command, toolchain requirement, workspace layout, or release/version flow, update this file in the same change.
+- If behavior differs for Claude-specific workflows, update `CLAUDE.md` to stay consistent with this file.
+- Keep this file concise and operational: commands, entrypoints, invariants, and safety rules only.
