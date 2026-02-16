@@ -1,5 +1,10 @@
 target/
 node/target/
 node/node_modules/
+wasm/pkg/
 .DS_Store
 *.node
+
+# Claude
+.claude/settings.local.json
+CLAUDE.local.md
