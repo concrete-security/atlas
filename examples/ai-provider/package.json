@@ -1,0 +1,29 @@
+{
+  "name": "@concrete-security/atlas-ai-provider",
+  "version": "0.1.0",
+  "description": "AI SDK provider with aTLS for Trusted Execution Environments",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "test": "node test/index.test.mjs"
+  },
+  "dependencies": {
+    "@concrete-security/atlas-node": "0.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.2.3",
+    "typescript": "^5.5.0"
+  }
+}
