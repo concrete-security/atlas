@@ -1,4 +1,4 @@
-.PHONY: help test test-all test-wasm test-wasm-node test-proxy build build-wasm build-node test-node clean demo-wasm setup-wasm
+.PHONY: help test test-all test-wasm test-wasm-node test-proxy build build-wasm build-node build-ai-provider test-node test-ai-provider clean demo-wasm setup-wasm
 
 CARGO ?= cargo
 DEMO_PORT ?= 8080
@@ -10,11 +10,13 @@ help:
 	@echo "  make test-wasm      # cargo check atlas-wasm for wasm32 target"
 	@echo "  make test-wasm-node # run WASM tests in Node.js via wasm-pack"
 	@echo "  make test-node      # run Node.js binding tests"
-	@echo "  make test-all       # run all tests (native + wasm + node)"
+	@echo "  make test-ai-provider # run AI provider package tests"
+	@echo "  make test-all       # run all tests (native + wasm + node + ai-provider)"
 	@echo ""
 	@echo "  make build          # build all native crates"
 	@echo "  make build-wasm     # build WASM package with wasm-pack"
 	@echo "  make build-node     # build Node.js native bindings"
+	@echo "  make build-ai-provider # build AI provider package"
 	@echo "  make setup-wasm     # setup WASM toolchain (macOS only)"
 	@echo ""
 	@echo "  make demo-wasm      # run proxy + serve demo at http://localhost:$(DEMO_PORT)/demo/"
@@ -41,8 +43,12 @@ test-wasm-node:
 test-node:
 	cd node && pnpm test
 
+# AI provider package tests
+test-ai-provider:
+	cd examples/ai-provider && pnpm test
+
 # All tests
-test-all: test test-wasm test-node
+test-all: test test-wasm test-node test-ai-provider
 
 # Build all native crates
 build:
@@ -73,6 +79,10 @@ build-wasm:
 # Build Node.js bindings
 build-node:
 	cd node && pnpm build
+
+# Build AI provider package
+build-ai-provider:
+	cd examples/ai-provider && pnpm build
 
 # Clean all artifacts
 clean:
