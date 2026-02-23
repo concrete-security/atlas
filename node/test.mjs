@@ -168,6 +168,47 @@ const tests = [
     assert(typeof fetch === "function", "Fetch not a function")
   }),
 
+  test("createAtlsFetch rejects invalid HTTP method (CRLF injection)", async () => {
+    const fetch = createAtlsFetch({
+      target: "example.com",
+      policy: DEV_POLICY
+    })
+
+    try {
+      await fetch("/api", { method: "GET\r\nInjected: header" })
+      throw new Error("Should have thrown")
+    } catch (err) {
+      assert(err.message.includes("Invalid HTTP method"), `Expected method error, got: ${err.message}`)
+    }
+  }),
+
+  test("createAtlsFetch rejects HTTP method with numbers", async () => {
+    const fetch = createAtlsFetch({
+      target: "example.com",
+      policy: DEV_POLICY
+    })
+
+    try {
+      await fetch("/api", { method: "GET1" })
+      throw new Error("Should have thrown")
+    } catch (err) {
+      assert(err.message.includes("Invalid HTTP method"), `Expected method error, got: ${err.message}`)
+    }
+  }),
+
+  test("createAtlsFetch accepts valid HTTP methods", async () => {
+    const fetch = createAtlsFetch({
+      target: "example.com",
+      policy: DEV_POLICY
+    })
+
+    for (const method of ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"]) {
+      const p = fetch("/api", { method })
+      assert(p instanceof Promise, `${method} should return a Promise`)
+      p.catch(() => {}) // suppress unhandled rejection (no real server)
+    }
+  }),
+
   test("createAtlsFetch returns promises", async () => {
     const fetch = createAtlsFetch({
       target: "example.com",

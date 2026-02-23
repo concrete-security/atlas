@@ -402,6 +402,10 @@ function createConnectionPool(parsed, serverName, policy, onAttestation) {
  * Format & write an HTTP/1.1 request on the raw aTLS socket.
  */
 async function writeRequest(socketId, method, path, host, headers, body, contentLength, kind) {
+  if (!/^[A-Z]+$/.test(method)) {
+    throw new Error(`Invalid HTTP method: ${method}`)
+  }
+
   let head = `${method} ${path} HTTP/1.1\r\nHost: ${host}\r\n`
 
   for (const [k, v] of Object.entries(headers)) {
@@ -779,12 +783,16 @@ function createAtlsFetchNode(options) {
     const { shouldProxy, url } = resolveDestination(input, parsed)
     if (!shouldProxy) return globalThis.fetch(input, init)
 
+    const method = (init.method || "GET").toUpperCase()
+    if (!/^[A-Z]+$/.test(method)) {
+      throw new Error(`Invalid HTTP method: ${method}`)
+    }
     const headers = mergeHeaders(defaultHeaders, init.headers)
     const { body, contentLength, kind } = normalizeBody(init.body)
 
     debug("fetch:request", {
       url: url.toString(),
-      method: init.method || "GET",
+      method,
       headers,
       bodyKind: kind,
       contentLength,
@@ -795,7 +803,7 @@ function createAtlsFetchNode(options) {
         hostname: parsed.host,
         port: parseInt(parsed.port),
         path: url.pathname + url.search,
-        method: init.method || "GET",
+        method,
         headers,
         agent,
       }
@@ -898,6 +906,9 @@ function createAtlsFetchBun(options) {
     if (!shouldProxy) return globalThis.fetch(input, init)
 
     const method = (init.method || "GET").toUpperCase()
+    if (!/^[A-Z]+$/.test(method)) {
+      throw new Error(`Invalid HTTP method: ${method}`)
+    }
     const headers = mergeHeaders(defaultHeaders, init.headers)
     const { body, contentLength, kind } = normalizeBody(init.body)
     const path = url.pathname + url.search
