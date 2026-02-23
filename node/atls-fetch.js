@@ -82,16 +82,61 @@ const {
  * @returns {{ host: string, port: string, hostPort: string, serverName: string }}
  */
 function parseTarget(target) {
+  // Example input:
+  // "enclave.example.com:8443"
   const trimmed = target.trim()
   const withoutProtocol = trimmed.replace(/^https?:\/\//, "")
   const hostPart = withoutProtocol.split("/")[0]
 
   const [host, port = "443"] = hostPart.split(":")
   return {
-    host,
-    port,
-    hostPort: `${host}:${port}`,
+    host,                          //  "enclave.example.com"
+    port,                          //  "8443"
+    hostPort: `${host}:${port}`,   //  "enclave.example.com:8443"
     serverName: host,
+  }
+}
+
+/**
+ * Resolve input to a destination URL and decide whether to proxy via aTLS.
+ * @returns {{ shouldProxy: boolean, url: URL | null }}
+ */
+function resolveDestination(input, parsed) {
+  let destUrl = null
+  let isRelative = false
+
+  try {
+    if (input instanceof URL) {
+      destUrl = input
+    } else if (typeof input === "string") {
+      destUrl = new URL(input)
+    } else if (input && typeof input === "object" && input.url) {
+      destUrl = new URL(input.url)
+    }
+  } catch (e) {
+    isRelative = true
+  }
+
+  const shouldProxy = isRelative || (destUrl?.hostname === parsed.host)
+
+  if (!shouldProxy) {
+    const urlString = destUrl?.toString() ?? (typeof input === "string" ? input : input?.url ?? String(input))
+    debug("fetch:passthrough", { url: urlString })
+  }
+
+  const urlStr = destUrl?.toString() ?? (typeof input === "string" ? input : input?.url ?? String(input))
+  return { shouldProxy, url: shouldProxy ? new URL(urlStr, `https://${parsed.hostPort}`) : destUrl }
+}
+
+/**
+ * Attach attestation as a property on a Response object.
+ */
+function attachAttestation(response, attestation) {
+  if (attestation) {
+    Object.defineProperty(response, "attestation", {
+      value: attestation,
+      enumerable: true,
+    })
   }
 }
 
@@ -282,6 +327,395 @@ export function createAtlsAgent(options) {
   })
 }
 
+// ---------------------------------------------------------------------------
+// Raw HTTP/1.1 helpers (Bun-compatible — no https.request / Agent needed)
+// ---------------------------------------------------------------------------
+
+const IDLE_TIMEOUT_MS = 300_000
+const MAX_HEADER_SIZE = 64 * 1024
+
+/**
+ * Connection pool (single cached connection + overflow).
+ * Avoids repeating the expensive aTLS handshake on every request.
+ */
+function createConnectionPool(parsed, serverName, policy, onAttestation) {
+  let cached = null // { socketId, busy, lastUsed, attestation }
+
+  async function connect() {
+    const { socketId, attestation } = await atlsConnect(
+      parsed.hostPort,
+      serverName,
+      policy,
+    )
+    debug("pool:connect", { socketId })
+    if (onAttestation) onAttestation(attestation)
+    return { socketId, attestation, busy: true, lastUsed: Date.now() }
+  }
+
+  return {
+    async acquire() {
+      if (
+        cached &&
+        !cached.busy &&
+        Date.now() - cached.lastUsed < IDLE_TIMEOUT_MS
+      ) {
+        debug("pool:reuse", { socketId: cached.socketId })
+        cached.busy = true
+        return cached
+      }
+      // Busy → open overflow connection (don't touch cached)
+      if (cached && cached.busy) {
+        debug("pool:overflow", { existingSocketId: cached.socketId })
+        return await connect()
+      }
+      // Stale or missing — (re)connect
+      if (cached) {
+        debug("pool:stale", { socketId: cached.socketId })
+        try { socketDestroy(cached.socketId) } catch (_) {}
+        cached = null
+      }
+      cached = await connect()
+      return cached
+    },
+
+    release(socketId) {
+      if (cached && cached.socketId === socketId) {
+        cached.busy = false
+        cached.lastUsed = Date.now()
+        debug("pool:release", { socketId })
+      } else {
+        // overflow connection — close it
+        debug("pool:release:overflow", { socketId })
+        try { socketDestroy(socketId) } catch (_) {}
+      }
+    },
+
+    invalidate(socketId) {
+      debug("pool:invalidate", { socketId })
+      try { socketDestroy(socketId) } catch (_) {}
+      if (cached && cached.socketId === socketId) cached = null
+    },
+  }
+}
+
+/**
+ * Format & write an HTTP/1.1 request on the raw aTLS socket.
+ */
+async function writeRequest(socketId, method, path, host, headers, body, contentLength, kind) {
+  let head = `${method} ${path} HTTP/1.1\r\nHost: ${host}\r\n`
+
+  for (const [k, v] of Object.entries(headers)) {
+    head += `${k}: ${v}\r\n`
+  }
+
+  if (contentLength != null && !headers["content-length"]) {
+    head += `content-length: ${contentLength}\r\n`
+  }
+
+  if (!headers["connection"]) {
+    head += "connection: keep-alive\r\n"
+  }
+
+  head += "\r\n"
+
+  debug("raw:write-head", { socketId, headLength: head.length })
+
+  if (!body || kind === "none") {
+    await socketWrite(socketId, Buffer.from(head))
+    return
+  }
+
+  if (kind === "buffer") {
+    const headerBuf = Buffer.from(head)
+    const combined = Buffer.concat([headerBuf, body])
+    await socketWrite(socketId, combined)
+    return
+  }
+
+  // Headers first, then stream body
+  await socketWrite(socketId, Buffer.from(head))
+
+  if (kind === "readable-stream") {
+    const reader = body.getReader()
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      await socketWrite(socketId, Buffer.from(value))
+    }
+    return
+  }
+
+  if (kind === "async-iterable") {
+    for await (const chunk of body) {
+      await socketWrite(socketId, Buffer.from(chunk))
+    }
+  }
+}
+
+/**
+ * Read response head (status line + headers) from the socket.
+ * Returns { status, statusText, headers, extra } where extra is any
+ * leftover bytes already read past the \r\n\r\n boundary.
+ */
+async function readResponseHead(socketId) {
+  let buf = Buffer.alloc(0)
+
+  while (true) {
+    const chunk = await socketRead(socketId, 16384)
+    if (!chunk || chunk.length === 0) {
+      throw new Error("Connection closed before response headers received")
+    }
+    buf = Buffer.concat([buf, chunk])
+
+    if (buf.length > MAX_HEADER_SIZE) {
+      throw new Error("Response headers exceed 64KB limit")
+    }
+
+    const idx = buf.indexOf("\r\n\r\n")
+    if (idx !== -1) {
+      const headBuf = buf.subarray(0, idx)
+      const extra = buf.subarray(idx + 4)
+      return parseHead(headBuf, extra)
+    }
+  }
+}
+
+function parseHead(headBuf, extra) {
+  const headStr = headBuf.toString("utf-8")
+  const lines = headStr.split("\r\n")
+
+  // Status line: "HTTP/1.1 200 OK"
+  const statusLine = lines[0]
+  const statusMatch = statusLine.match(/^HTTP\/\d\.\d (\d{3})(?: (.*))?$/)
+  if (!statusMatch) {
+    throw new Error(`Malformed status line: ${statusLine}`)
+  }
+  const status = parseInt(statusMatch[1], 10)
+  const statusText = statusMatch[2] || ""
+
+  // Parse headers (lowercase keys, set-cookie as array)
+  const headers = {}
+  for (let i = 1; i < lines.length; i++) {
+    const colonIdx = lines[i].indexOf(":")
+    if (colonIdx === -1) continue
+    const name = lines[i].substring(0, colonIdx).trim().toLowerCase()
+    const value = lines[i].substring(colonIdx + 1).trim()
+
+    if (name === "set-cookie") {
+      if (!headers[name]) headers[name] = []
+      headers[name].push(value)
+    } else if (headers[name] !== undefined) {
+      headers[name] += `, ${value}`
+    } else {
+      headers[name] = value
+    }
+  }
+
+  debug("raw:response-head", { status, statusText, headers })
+  return { status, statusText, headers, extra }
+}
+
+/**
+ * Return true if this method+status combination has no body.
+ */
+function hasNoBody(method, status) {
+  if (method === "HEAD") return true
+  if (status === 204 || status === 304) return true
+  if (status >= 100 && status < 200) return true
+  return false
+}
+
+/**
+ * Detect stale-connection errors (server closed between requests).
+ */
+function isStaleConnectionError(err) {
+  if (!err) return false
+  const msg = (err.message || "").toLowerCase()
+  return /closed|reset|epipe|broken pipe|etimedout|econnreset/.test(msg)
+}
+
+/**
+ * Build a ReadableStream that yields the response body.
+ * Handles chunked transfer-encoding, content-length, and EOF-delimited bodies.
+ */
+function readBodyStream(socketId, headers, extra, signal, pool) {
+  const isChunked = (headers["transfer-encoding"] || "")
+    .toLowerCase()
+    .includes("chunked")
+  const contentLengthStr = headers["content-length"]
+  const wantClose =
+    (headers["connection"] || "").toLowerCase() === "close"
+
+  return new ReadableStream({
+    start(controller) {
+      // Abort signal handling
+      if (signal) {
+        const onAbort = () => {
+          controller.error(signal.reason || new DOMException("Aborted", "AbortError"))
+          pool.invalidate(socketId)
+        }
+        if (signal.aborted) {
+          onAbort()
+          return
+        }
+        signal.addEventListener("abort", onAbort, { once: true })
+      }
+
+      // Choose read strategy
+      if (isChunked) {
+        readChunked(socketId, extra, controller, pool, wantClose)
+      } else if (contentLengthStr != null) {
+        readContentLength(
+          socketId,
+          extra,
+          parseInt(contentLengthStr, 10),
+          controller,
+          pool,
+          wantClose,
+        )
+      } else {
+        readUntilEOF(socketId, extra, controller, pool)
+      }
+    },
+
+    cancel() {
+      pool.invalidate(socketId)
+    },
+  })
+}
+
+async function readChunked(socketId, extra, controller, pool, wantClose) {
+  let buf = extra && extra.length > 0 ? Buffer.from(extra) : Buffer.alloc(0)
+
+  try {
+    while (true) {
+      // Find chunk-size line
+      let crlfIdx = buf.indexOf("\r\n")
+      while (crlfIdx === -1) {
+        const chunk = await socketRead(socketId, 16384)
+        if (!chunk || chunk.length === 0) {
+          controller.close()
+          pool.invalidate(socketId)
+          return
+        }
+        buf = Buffer.concat([buf, chunk])
+        crlfIdx = buf.indexOf("\r\n")
+      }
+
+      const sizeLine = buf.subarray(0, crlfIdx).toString("utf-8").trim()
+      // Strip chunk extensions (e.g. ";ext=value")
+      const sizeHex = sizeLine.split(";")[0].trim()
+      const chunkSize = parseInt(sizeHex, 16)
+
+      if (isNaN(chunkSize)) {
+        controller.error(new Error(`Invalid chunk size: ${sizeLine}`))
+        pool.invalidate(socketId)
+        return
+      }
+
+      buf = buf.subarray(crlfIdx + 2)
+
+      if (chunkSize === 0) {
+        // Terminal chunk — consume trailers + final \r\n before reusing connection
+        // Trailers end with \r\n\r\n (or just \r\n if no trailers)
+        while (buf.indexOf("\r\n") === -1) {
+          const trailer = await socketRead(socketId, 4096)
+          if (!trailer || trailer.length === 0) break
+          buf = Buffer.concat([buf, trailer])
+        }
+        controller.close()
+        if (wantClose) {
+          pool.invalidate(socketId)
+        } else {
+          pool.release(socketId)
+        }
+        return
+      }
+
+      // Read chunkSize bytes + trailing \r\n
+      const needed = chunkSize + 2 // data + \r\n
+      while (buf.length < needed) {
+        const chunk = await socketRead(socketId, Math.max(16384, needed - buf.length))
+        if (!chunk || chunk.length === 0) {
+          // Premature close — enqueue what we have
+          if (buf.length > 0) controller.enqueue(new Uint8Array(buf))
+          controller.close()
+          pool.invalidate(socketId)
+          return
+        }
+        buf = Buffer.concat([buf, chunk])
+      }
+
+      // Enqueue chunk data immediately (critical for streaming)
+      controller.enqueue(new Uint8Array(buf.subarray(0, chunkSize)))
+      buf = buf.subarray(needed) // skip data + \r\n
+    }
+  } catch (err) {
+    controller.error(err)
+    pool.invalidate(socketId)
+  }
+}
+
+async function readContentLength(socketId, extra, total, controller, pool, wantClose) {
+  let remaining = total
+  let buf = extra && extra.length > 0 ? Buffer.from(extra) : Buffer.alloc(0)
+
+  try {
+    // Enqueue any extra bytes already read
+    if (buf.length > 0) {
+      const toSend = buf.subarray(0, Math.min(buf.length, remaining))
+      controller.enqueue(new Uint8Array(toSend))
+      remaining -= toSend.length
+      buf = buf.subarray(toSend.length)
+    }
+
+    while (remaining > 0) {
+      const chunk = await socketRead(socketId, Math.min(16384, remaining))
+      if (!chunk || chunk.length === 0) {
+        controller.close()
+        pool.invalidate(socketId)
+        return
+      }
+      const toSend = chunk.subarray(0, Math.min(chunk.length, remaining))
+      controller.enqueue(new Uint8Array(toSend))
+      remaining -= toSend.length
+    }
+
+    controller.close()
+    if (wantClose) {
+      pool.invalidate(socketId)
+    } else {
+      pool.release(socketId)
+    }
+  } catch (err) {
+    controller.error(err)
+    pool.invalidate(socketId)
+  }
+}
+
+async function readUntilEOF(socketId, extra, controller, pool) {
+  try {
+    if (extra && extra.length > 0) {
+      controller.enqueue(new Uint8Array(extra))
+    }
+
+    while (true) {
+      const chunk = await socketRead(socketId, 16384)
+      if (!chunk || chunk.length === 0) {
+        controller.close()
+        pool.invalidate(socketId) // EOF — not reusable
+        return
+      }
+      controller.enqueue(new Uint8Array(chunk))
+    }
+  } catch (err) {
+    controller.error(err)
+    pool.invalidate(socketId)
+  }
+}
+
+// ---------------------------------------------------------------------------
+
 /**
  * Create a fetch function that uses aTLS for requests to the target,
  * and falls back to native global fetch for everything else.
@@ -306,6 +740,8 @@ export function createAtlsAgent(options) {
  * const fetch = createAtlsFetch({ target: "enclave.example.com", policy, onAttestation: console.log })
  * const openai = createOpenAI({ baseURL: "https://enclave.example.com/v1", fetch })
  */
+const IS_BUN = typeof globalThis.Bun !== "undefined"
+
 export function createAtlsFetch(options) {
   if (typeof options === "string") {
     throw new Error(
@@ -325,35 +761,24 @@ export function createAtlsFetch(options) {
     )
   }
 
+  if (IS_BUN) {
+    return createAtlsFetchBun(options)
+  }
+  return createAtlsFetchNode(options)
+}
+
+/**
+ * Node.js implementation — uses https.request + Agent (proven path).
+ */
+function createAtlsFetchNode(options) {
   const parsed = parseTarget(options.target)
   const agent = createAtlsAgent(options)
   const defaultHeaders = options.headers || undefined
 
   return async function atlsFetch(input, init = {}) {
-    let destUrl = null
-    let isRelative = false
+    const { shouldProxy, url } = resolveDestination(input, parsed)
+    if (!shouldProxy) return globalThis.fetch(input, init)
 
-    try {
-      if (input instanceof URL) {
-        destUrl = input
-      } else if (typeof input === "string") {
-        destUrl = new URL(input)
-      } else if (input && typeof input === "object" && input.url) {
-        destUrl = new URL(input.url)
-      }
-    } catch (e) {
-      isRelative = true
-    }
-
-    const shouldProxy = isRelative || (destUrl?.hostname === parsed.host)
-
-    if (!shouldProxy) {
-      const urlString = destUrl?.toString() ?? (typeof input === "string" ? input : input?.url ?? String(input))
-      debug("fetch:passthrough", { url: urlString })
-      return globalThis.fetch(input, init)
-    }
-
-    const url = new URL(input, `https://${parsed.hostPort}`)
     const headers = mergeHeaders(defaultHeaders, init.headers)
     const { body, contentLength, kind } = normalizeBody(init.body)
 
@@ -384,7 +809,6 @@ export function createAtlsFetch(options) {
           status: res.statusCode,
           headers: res.headers,
         })
-        const attestation = res.socket?.atlsAttestation
         const responseHeaders = toWebHeaders(res.headers)
         const webStream = Readable.toWeb(res)
 
@@ -394,13 +818,7 @@ export function createAtlsFetch(options) {
           headers: responseHeaders,
         })
 
-        if (attestation) {
-          Object.defineProperty(response, "attestation", {
-            value: attestation,
-            enumerable: true,
-          })
-        }
-
+        attachAttestation(response, res.socket?.atlsAttestation)
         resolve(response)
       })
 
@@ -456,6 +874,109 @@ export function createAtlsFetch(options) {
           req.end()
       }
     })
+  }
+}
+
+/**
+ * Bun implementation — raw HTTP/1.1 over aTLS socket + connection pool.
+ * Bun ignores Agent.createConnection, so we bypass https.request entirely.
+ */
+function createAtlsFetchBun(options) {
+  const parsed = parseTarget(options.target)
+  const effectiveServerName = options.serverName || parsed.serverName
+  const defaultHeaders = options.headers || undefined
+
+  const pool = createConnectionPool(
+    parsed,
+    effectiveServerName,
+    options.policy,
+    options.onAttestation,
+  )
+
+  return async function atlsFetch(input, init = {}) {
+    const { shouldProxy, url } = resolveDestination(input, parsed)
+    if (!shouldProxy) return globalThis.fetch(input, init)
+
+    const method = (init.method || "GET").toUpperCase()
+    const headers = mergeHeaders(defaultHeaders, init.headers)
+    const { body, contentLength, kind } = normalizeBody(init.body)
+    const path = url.pathname + url.search
+    const signal = init.signal || null
+
+    debug("fetch:request", {
+      url: url.toString(),
+      method,
+      headers,
+      bodyKind: kind,
+      contentLength,
+    })
+
+    if (signal?.aborted) {
+      throw signal.reason || new DOMException("Aborted", "AbortError")
+    }
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      let conn
+      try {
+        conn = await pool.acquire()
+
+        await writeRequest(
+          conn.socketId,
+          method,
+          path,
+          parsed.host,
+          headers,
+          body,
+          contentLength,
+          kind,
+        )
+
+        const head = await readResponseHead(conn.socketId)
+
+        debug("fetch:response", {
+          status: head.status,
+          headers: head.headers,
+        })
+
+        const responseHeaders = toWebHeaders(head.headers)
+
+        if (hasNoBody(method, head.status)) {
+          pool.release(conn.socketId)
+          const response = new Response(null, {
+            status: head.status,
+            statusText: head.statusText,
+            headers: responseHeaders,
+          })
+          attachAttestation(response, conn.attestation)
+          return response
+        }
+
+        const bodyStream = readBodyStream(
+          conn.socketId,
+          head.headers,
+          head.extra,
+          signal,
+          pool,
+        )
+
+        const response = new Response(bodyStream, {
+          status: head.status,
+          statusText: head.statusText,
+          headers: responseHeaders,
+        })
+
+        attachAttestation(response, conn.attestation)
+        return response
+      } catch (err) {
+        if (conn) pool.invalidate(conn.socketId)
+
+        if (attempt === 0 && isStaleConnectionError(err)) {
+          debug("fetch:retry-stale", { err: err.message })
+          continue
+        }
+        throw err
+      }
+    }
   }
 }
 
