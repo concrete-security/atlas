@@ -1,5 +1,5 @@
 /**
- * atlas-ai-provider tests
+ * private-ai-sdk tests
  *
  * Run with: node test/index.test.mjs   (or bun test/index.test.mjs)
  *
@@ -274,7 +274,7 @@ const integrationTests = [
 // ============================================================================
 
 async function main() {
-  console.log("atlas-ai-provider tests\n")
+  console.log("private-ai-sdk tests\n")
 
   console.log("Unit tests\n================================\n")
   for (const runTest of tests) {

@@ -1,4 +1,4 @@
-# atlas-ai-provider
+# private-ai-sdk
 
 An [AI SDK](https://sdk.vercel.ai/) provider that wraps any AI SDK (OpenAI, Anthropic, etc.) and replaces its HTTP transport with an **attested TLS (aTLS)** channel. This ensures the model you're talking to runs inside a verified **Trusted Execution Environment (TEE)**.
 
@@ -10,7 +10,7 @@ aTLS solves this: before any data is exchanged, the server proves it runs inside
 
 ## Who can use it
 
-Any application built on Vercel's [AI SDK](https://sdk.vercel.ai/) — coding agents, chatbots, RAG pipelines, custom scripts — can use this provider as a drop-in replacement to get secure inference. If it uses `@ai-sdk/*`, it works with atlas-ai-provider.
+Any application built on Vercel's [AI SDK](https://sdk.vercel.ai/) — coding agents, chatbots, RAG pipelines, custom scripts — can use this provider as a drop-in replacement to get secure inference. If it uses `@ai-sdk/*`, it works with private-ai-sdk.
 
 Currently used by:
 - [**secure-opencode**](https://github.com/concrete-security/secure-opencode) — a fork of OpenCode that offers secure AI coding in the terminal.
@@ -23,7 +23,7 @@ Host app (e.g. opencode)
   │  config: { sdk: "@ai-sdk/anthropic", policyFile: "./cvm_policy.json" }
   │
   ▼
-atlas-ai-provider
+private-ai-sdk
   │
   │  1. Loads the policy from file or config
   │  2. Loads the AI SDK dynamically from the host's node_modules
@@ -41,7 +41,7 @@ The host application sees a standard AI SDK provider — the aTLS layer is trans
 ### Install
 
 ```bash
-cd examples/ai-provider
+cd examples/private-ai-sdk
 pnpm install
 pnpm build   # compiles to dist/
 ```
@@ -54,7 +54,7 @@ The provider is configured through the host application's config. Example with o
 {
   "provider": {
     "my-secure-provider": {
-      "npm": "file:///path/to/atlas/examples/ai-provider/dist/index.js",
+      "npm": "file:///path/to/atlas/examples/private-ai-sdk/dist/index.js",
       "api": "https://your-tee-endpoint.com/v1",
       "options": {
         "sdk": "@ai-sdk/anthropic",
@@ -84,5 +84,5 @@ The provider is configured through the host application's config. Example with o
 
 ```bash
 # Unit tests (no network)
-ai-provider % cd examples/ai-provider && node test/index.test.mjs
+ai-provider % cd examples/private-ai-sdk && node test/index.test.mjs
 ```

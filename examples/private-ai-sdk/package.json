@@ -1,5 +1,5 @@
 {
-  "name": "@concrete-security/atlas-ai-provider",
+  "name": "@concrete-security/private-ai-sdk",
   "version": "0.1.0",
   "description": "AI SDK provider with aTLS for Trusted Execution Environments",
   "type": "module",

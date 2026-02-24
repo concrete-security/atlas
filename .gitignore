@@ -2,10 +2,10 @@ target/
 node/target/
 node/node_modules/
 wasm/pkg/
-ai-provider/node_modules/
-ai-provider/dist/
-examples/ai-provider/node_modules/
-examples/ai-provider/dist/
+private-ai-sdk/node_modules/
+private-ai-sdk/dist/
+examples/private-ai-sdk/node_modules/
+examples/private-ai-sdk/dist/
 package-lock.json
 wasm/pkg/
 .DS_Store

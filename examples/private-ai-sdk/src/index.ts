@@ -101,7 +101,7 @@ export function createAtlasProvider(options: AtlasProviderOptions) {
   // --- Validate required fields ---
   if (!sdk) {
     throw new Error(
-      'atlas-ai-provider: "sdk" is required. ' +
+      'private-ai-sdk: "sdk" is required. ' +
         'Set it in config options (e.g., "sdk": "@ai-sdk/openai-compatible")'
     )
   }
@@ -116,12 +116,12 @@ export function createAtlasProvider(options: AtlasProviderOptions) {
       policy = JSON.parse(readFileSync(resolved, "utf-8"))
     } catch (err) {
       throw new Error(
-        `atlas-ai-provider: failed to read policy file "${policyFile}": ${(err as Error).message}`
+        `private-ai-sdk: failed to read policy file "${policyFile}": ${(err as Error).message}`
       )
     }
   } else {
     throw new Error(
-      'atlas-ai-provider: "policy" or "policyFile" is required. ' +
+      'private-ai-sdk: "policy" or "policyFile" is required. ' +
         "Provide a Policy object or a path to a JSON policy file."
     )
   }
@@ -136,7 +136,7 @@ export function createAtlasProvider(options: AtlasProviderOptions) {
     finalTarget = `${url.hostname}:${url.port || defaultPort}`
   } else {
     throw new Error(
-      'atlas-ai-provider: "target" or "baseURL" is required for aTLS connection'
+      'private-ai-sdk: "target" or "baseURL" is required for aTLS connection'
     )
   }
 
@@ -167,7 +167,7 @@ export function createAtlasProvider(options: AtlasProviderOptions) {
     createSdk = sdkMod[createFnKey]
   } catch (err) {
     throw new Error(
-      `atlas-ai-provider: failed to load SDK "${sdk}". ` +
+      `private-ai-sdk: failed to load SDK "${sdk}". ` +
         `Make sure it is installed in the host application. Error: ${(err as Error).message}`
     )
   }
