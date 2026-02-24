@@ -1,0 +1,83 @@
+# Publish @concrete-security/private-ai-sdk to npm
+#
+# How to release:
+#   1. Update version in examples/private-ai-sdk/package.json
+#   2. Commit and push the change
+#   3. Run this workflow with dry_run=false
+#
+# The workflow will:
+#   - Build the TypeScript package
+#   - Create git tag: private-ai-sdk/<version>
+#   - Create draft GitHub release
+#   - Publish to npm
+
+name: Publish Private AI SDK
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (skip npm publish and release)'
+        type: boolean
+        default: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    defaults:
+      run:
+        working-directory: examples/private-ai-sdk
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Build
+        run: pnpm build
+
+      - name: Dry run
+        if: ${{ inputs.dry_run }}
+        run: |
+          echo "Dry run - would publish:"
+          cat package.json | grep -E '"name"|"version"'
+
+      # Required for trusted Publishing >= 11.5.1
+      - name: Update npm
+        run: npm install -g npm@11.9.0
+
+      - name: Publish to npm
+        if: ${{ !inputs.dry_run }}
+        run: npm publish --provenance --access public
+
+      - name: Create draft release
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=$(jq -r '.version' package.json)
+          TAG="private-ai-sdk/${VERSION}"
+          echo "version: ${VERSION}"
+          echo "tag: ${TAG}"
+
+          git tag "$TAG"
+          git push origin "$TAG"
+
+          gh release create --draft --repo ${{ github.repository }} \
+            --verify-tag "$TAG" \
+            --title "private-ai-sdk v${VERSION}" \
+            --notes "Published @concrete-security/private-ai-sdk@${VERSION} to npm"
