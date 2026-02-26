@@ -1,132 +1,93 @@
 
-// AI SDK provider wrapper with aTLS (attested TLS) for Trusted Execution Environments.
+// private-ai-sdk: wraps any AI SDK provider so all HTTP traffic goes through aTLS (attested TLS).
 //
-// 1- Requires an aTLS policy (via `policy` or `policyFile` option)
-// 2- Creates a special fetch via createAtlsFetch() that:
-//    - opens an attested TLS connection to host:port
-//    - verifies the attestation against the policy
-//    - then sends HTTP requests over this channel
-// 3- Dynamically loads an AI SDK (e.g., @ai-sdk/openai-compatible) from the host application
-// 4- Returns the SDK provider, but with fetch replaced by the aTLS fetch.
+// Why: when an AI model runs inside a TEE (Trusted Execution Environment), you want
+// cryptographic proof that the server is genuine before sending data. aTLS does that.
 //
-// Works with any host application (the host application, custom agents, scripts, etc.)
-// as long as the SDK is available in the host's node_modules.
+// How it works:
+//   1. The host app passes a SDK factory function (e.g., createAnthropic)
+//   2. We create an aTLS-secured `fetch` that verifies the server's attestation
+//   3. We call the SDK factory with our secure fetch instead of the default one
+//   4. The host gets back a normal AI SDK provider — it doesn't know about aTLS
+//
+// Why a factory function and not a package name string?
+//   In a compiled binary, node_modules don't exist on disk. require("@ai-sdk/anthropic")
+//   would fail. The host resolves the SDK from its bundled providers and passes the
+//   factory function directly — no filesystem lookup needed.
 
-import { createRequire } from "module"
 import { readFileSync } from "fs"
-import { join, resolve, isAbsolute } from "path"
+import { resolve, isAbsolute } from "path"
 import {
-  createAtlsFetch,             // Builds a secure "fetch" (HTTP client) using aTLS
+  createAtlsFetch,
   type AtlsAttestation,        // The "proof received" object (what the server actually proves)
   type Policy,                 // The "expected rules" object (what the server MUST prove)
 } from "@concrete-security/atlas-node"
 
-// require() that resolves from the host application, not from this package.
-// createRequire() expects a file path, so we point to the host's package.json.
-// This lets us load SDKs installed in the host (e.g., @ai-sdk/openai-compatible)
-// without declaring them as our own dependencies.
-const hostRequire = createRequire(join(process.cwd(), "package.json"))
+/** SDK factory signature — any create* function from @ai-sdk/* packages. */
+type SdkFactory = (config: Record<string, unknown>) => unknown
 
 export interface AtlasProviderOptions {
-  /** Provider name (passed by the host application as providerID) */
+  /** Provider name (passed by the host application as providerID). */
   name?: string
-  /** Base URL of the AI API (e.g., "https://vllm.concrete-security.com/v1") */
+  /** Base URL of the AI API (e.g., "https://vllm.example.com/v1"). */
   baseURL?: string
-  /** API key for the endpoint */
+  /** API key for the endpoint. */
   apiKey?: string
   /**
-   * npm package name of the underlying AI SDK (REQUIRED).
-   * Provided by the host application via config options.
-   * Example: "@ai-sdk/openai-compatible", "@ai-sdk/anthropic"
-   *
-   * The SDK is loaded at runtime via require() from the host application's bundled
-   * modules. This package declares no dependency on any SDK — the host application
-   * controls the version entirely.
+   * SDK factory function (REQUIRED).
+   * The host app passes this from its bundled providers (e.g., createAnthropic).
    */
-  sdk: string
-  /**
-   * aTLS target host:port override.
-   * If not provided, derived from baseURL (e.g., "vllm.concrete-security.com:443").
-   */
+  sdk: SdkFactory
+  /** aTLS target host:port. If omitted, derived from baseURL. */
   target?: string
-  /**
-   * aTLS verification policy override.
-   * If not provided, falls back to `policyFile`. One of the two is required.
-   */
-  policy?: Policy
-  /**
-   * Path to a JSON file containing the aTLS verification policy.
-   * If both `policy` and `policyFile` are provided, `policy` takes precedence.
-   * Relative paths are resolved from process.cwd().
-   */
-  policyFile?: string
-  /** Callback invoked after each successful aTLS attestation. */
+  /** Path to the JSON policy file for aTLS verification (REQUIRED). Relative paths resolve from cwd. */
+  policyFile: string
+  /** Called after each aTLS attestation (useful for logging or status indicators). */
   onAttestation?: (attestation: AtlsAttestation) => void
-  /** Any other options are forwarded to the underlying SDK. */
+  /** Extra options forwarded as-is to the underlying SDK. */
   [key: string]: unknown
 }
 
-/** Stores the latest attestation for external access (e.g., status indicators). */
+/** Last attestation result, exposed for status indicators (e.g., UI badges). */
 let _lastAttestation: AtlsAttestation | null = null
 
-/**
- * Get the latest aTLS attestation result.
- * Returns null if no connection has been established yet.
- */
 export function getAttestation(): AtlsAttestation | null {
   return _lastAttestation
 }
 
 /**
- * Create an AI SDK provider that communicates over aTLS.
- *
- * 1. Takes the SDK name from options.sdk (required, provided by the host application config)
- * 2. Loads it at runtime via require() — resolves from the host application's bundled modules
- * 3. Creates an aTLS-secured fetch via @concrete-security/atlas-node
- * 4. Returns the SDK provider with fetch replaced by aTLS fetch
- *
- * The result is transparent to the host application — it just sees a standard AI SDK provider.
+ * Create an AI SDK provider whose traffic is secured by aTLS.
  */
 export function createAtlasProvider(options: AtlasProviderOptions) {
   const {
     sdk,
     target: targetOverride,
-    policy: policyOverride,
     policyFile,
     onAttestation: userOnAttestation,
-    fetch: _ignoredFetch,
+    fetch: _unusedFetch, // Destructured to exclude from sdkOptions — we replace it with aTLS fetch
     ...sdkOptions
   } = options
 
-  // --- Validate required fields ---
-  if (!sdk) {
+  // --- Validate sdk ---
+  if (typeof sdk !== "function") {
     throw new Error(
-      'private-ai-sdk: "sdk" is required. ' +
-        'Set it in config options (e.g., "sdk": "@ai-sdk/openai-compatible")'
+      `private-ai-sdk: "sdk" must be a factory function, got ${typeof sdk}. ` +
+        "The host must pass the bundled SDK factory (e.g., createAnthropic), not a string."
     )
   }
 
-  // --- Resolve policy (required: either policy object or policyFile path) ---
+  // --- Load policy from file ---
+  const resolved = isAbsolute(policyFile) ? policyFile : resolve(process.cwd(), policyFile)
   let policy: Policy
-  if (policyOverride) {
-    policy = policyOverride
-  } else if (policyFile) {
-    const resolved = isAbsolute(policyFile) ? policyFile : resolve(process.cwd(), policyFile)
-    try {
-      policy = JSON.parse(readFileSync(resolved, "utf-8"))
-    } catch (err) {
-      throw new Error(
-        `private-ai-sdk: failed to read policy file "${policyFile}": ${(err as Error).message}`
-      )
-    }
-  } else {
+  try {
+    policy = JSON.parse(readFileSync(resolved, "utf-8"))
+  } catch (err) {
     throw new Error(
-      'private-ai-sdk: "policy" or "policyFile" is required. ' +
-        "Provide a Policy object or a path to a JSON policy file."
+      `private-ai-sdk: failed to read policy file "${policyFile}": ${(err as Error).message}`
     )
   }
 
-  // --- Derive aTLS target from baseURL if not explicitly provided ---
+  // --- Resolve aTLS target (host:port) ---
   let finalTarget: string
   if (targetOverride) {
     finalTarget = targetOverride
@@ -136,11 +97,11 @@ export function createAtlasProvider(options: AtlasProviderOptions) {
     finalTarget = `${url.hostname}:${url.port || defaultPort}`
   } else {
     throw new Error(
-      'private-ai-sdk: "target" or "baseURL" is required for aTLS connection'
+      'private-ai-sdk: "target" or "baseURL" is required for aTLS connection.'
     )
   }
 
-  // --- Create aTLS-secured fetch ---
+  // --- Build aTLS fetch: verifies attestation, then sends HTTP over the attested channel ---
   const atlsFetch = createAtlsFetch({
     target: finalTarget,
     policy,
@@ -156,24 +117,8 @@ export function createAtlasProvider(options: AtlasProviderOptions) {
     },
   })
 
-  // --- Load the underlying SDK (provided by the host application) ---
-  let createSdk: Function
-  try {
-    const sdkMod = hostRequire(sdk)
-    const createFnKey = Object.keys(sdkMod).find((k) => k.startsWith("create"))
-    if (!createFnKey) {
-      throw new Error(`No create* function found in module "${sdk}"`)
-    }
-    createSdk = sdkMod[createFnKey]
-  } catch (err) {
-    throw new Error(
-      `private-ai-sdk: failed to load SDK "${sdk}". ` +
-        `Make sure it is installed in the host application. Error: ${(err as Error).message}`
-    )
-  }
-
-  // --- Return the wrapped provider ---
-  return createSdk({
+  // --- Create the provider with our secure fetch swapped in ---
+  return sdk({
     ...sdkOptions,
     fetch: atlsFetch,
   })
