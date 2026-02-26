@@ -70,3 +70,30 @@ jobs:
         working-directory: node
         run: npm test
 
+  test-python:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.10', '3.11', '3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        working-directory: python
+        run: uv sync --group test --group dev
+      - name: Build Python bindings
+        working-directory: python
+        run: uv run maturin develop
+      - name: Run ruff format check
+        working-directory: python
+        run: make check-format
+      - name: Run ruff lint check
+        working-directory: python
+        run: make check-lint
+      - name: Run tests with coverage
+        working-directory: python
+        run: SHOW_LOGS=true make test-coverage

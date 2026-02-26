@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this repo is
 
 - Atlas is a multi-platform Attested TLS (aTLS) implementation that verifies TEE evidence after TLS handshake and binds attestation to the TLS session via EKM (RFC 9266).
-- Main deliverables: Rust core crate (`core/`), Node bindings (`node/`), and browser/WASM bindings (`wasm/`).
+- Main deliverables: Rust core crate (`core/`), Python bindings (`python/`), Node bindings (`node/`), and browser/WASM bindings (`wasm/`).
 - Current production verifier path is Intel TDX via Dstack (SEV-SNP planned).
 
 ## Quickstart
@@ -14,6 +14,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Prereqs
 # - Rust stable (Node build path needs Rust 1.88+)
 # - Node >=18 (CI uses 20), pnpm 10.x
+# - Python >=3.10, uv (for Python bindings)
 # - wasm-pack for wasm targets
 # - macOS wasm: make setup-wasm
 
@@ -23,6 +24,12 @@ make test-wasm
 cargo fmt --all --check
 cargo clippy --workspace --exclude atlas-wasm
 
+# Python binding
+cd python && uv sync --group dev --group test
+cd python && uv run maturin develop
+cd python && make test
+cd python && make qa-all
+
 # Full verification (closest CI parity)
 make test-all
 make test-wasm-node
@@ -31,6 +38,7 @@ make test-wasm-node
 make build
 make build-node
 make build-wasm
+make build-python
 ```
 
 ## Repo map (look here first)
@@ -43,6 +51,9 @@ make build-wasm
 - `node/atls-fetch.js`: user-facing Node API wrapper.
 - `wasm/src/lib.rs`: WASM bindings entrypoint.
 - `wasm/proxy/`: WebSocket-to-TCP proxy for browser path.
+- `python/src/lib.rs`: PyO3 bindings source (AtlsConnection, atls_connect).
+- `python/src/atlas/httpx/transport.py`: custom httpx transport over Rust aTLS streams.
+- `python/src/atlas/policy.py`: Python policy dict builders.
 - `core/ARCHITECTURE.md`: architecture and trait flow.
 - `core/BOOTCHAIN-VERIFICATION.md`: expected measurement derivation.
 
@@ -57,8 +68,9 @@ Generated files (avoid direct edits):
   - Rust stable for core development.
   - Rust 1.88+ required for Node binding build path.
   - Node >=18, pnpm 10.x.
-- Formatting: `cargo fmt --all --check`.
-- Linting: `cargo clippy --workspace --exclude atlas-wasm`.
+  - Python >=3.10, uv for dependency management, maturin for builds.
+- Formatting: `cargo fmt --all --check`. Python: `cd python && make check-format` (ruff).
+- Linting: `cargo clippy --workspace --exclude atlas-wasm`. Python: `cd python && make check-lint` (ruff).
 - Public API changes:
   - Preserve backward compatibility unless change is explicitly intended.
   - Update docs/examples whenever public APIs change.
@@ -74,6 +86,7 @@ Generated files (avoid direct edits):
 - For targeted debugging:
   - `cargo test -p atlas-rs <test_name>`
   - `cargo test -p atlas-proxy <test_name>`
+  - `cd python && uv run pytest tests/<test_file> -v`
 - Keep network-dependent tests out of default verification paths unless explicitly required.
 - If unsure about architecture, read `core/ARCHITECTURE.md` before editing core modules.
 - Native vs WASM split uses `#[cfg(target_arch = "wasm32")]` — keep both variants compiling.
@@ -87,12 +100,14 @@ Generated files (avoid direct edits):
 5. `cargo clippy --workspace --exclude atlas-wasm` passes.
 6. If `node/` changed: `make build-node` and `make test-node` pass.
 7. If `wasm/` changed: `make build-wasm` and `make test-wasm-node` pass.
-8. If public behavior changed, docs/examples are updated in the same change.
+8. If `python/` changed: `cd python && make test` and `cd python && make qa-all` pass.
+9. If public behavior changed, docs/examples are updated in the same change.
 
 ## Debugging
 
 - Core (native): `DEBUG_ATLS=1` for `atlas_rs=debug` logs.
 - Node wrapper: `ATLS_DEBUG=1` for JS-side debug output.
+- Python: `DEBUG_ATLS=1` for `atlas=debug` logs (same env var as core).
 - Proxy: requires `ATLS_PROXY_ALLOWLIST` env var (rejects all connections by default).
 
 ## Safety and security
@@ -116,7 +131,8 @@ Generated files (avoid direct edits):
 
 - Do not manually edit `node/npm/*/package.json`.
 - Use `cd node && pnpm sync-versions <new-version>` for Node package version sync.
-- Then update `core/Cargo.toml` and `wasm/package.json` as needed.
+- Then update `core/Cargo.toml`, `wasm/package.json`, and `python/Cargo.toml`+`python/pyproject.toml` as needed.
+- Python publish: run `.github/workflows/publish-python.yml` manually; it creates a `python/<version>` tag and draft release.
 
 ## CLAUDE.md maintenance (required)
 

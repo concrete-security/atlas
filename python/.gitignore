@@ -1,0 +1,19 @@
+.vscode/
+
+.venv/
+venv/
+
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.ruff_cache/
+dist/
+.pytest_cache/
+
+.coverage
+coverage.xml
+
+# bindings
+_atlas.*
+!_atlas.pyi
