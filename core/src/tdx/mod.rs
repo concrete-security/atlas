@@ -4,5 +4,6 @@
 //! that are not specific to any particular TDX deployment platform.
 
 pub mod config;
+pub mod grace_period;
 
 pub use config::{ExpectedBootchain, TCB_STATUS_LIST};

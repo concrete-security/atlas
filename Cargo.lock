@@ -134,6 +134,7 @@ name = "atlas-rs"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "console_log",
  "dcap-qvl",
  "dstack-sdk-types",
@@ -144,6 +145,7 @@ dependencies = [
  "hex",
  "js-sys",
  "log",
+ "pem",
  "rand 0.8.5",
  "reqwest",
  "ring",
