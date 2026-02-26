@@ -1,0 +1,154 @@
+# Publish atlas-python to PyPI
+#
+# How to release:
+#   1. Update version in python/pyproject.toml and python/Cargo.toml
+#   2. Commit and push the change
+#   3. Run this workflow with dry_run=true to verify builds
+#   4. Run this workflow with dry_run=false and environment=pypi (or testpypi)
+#
+# The workflow will:
+#   - Build wheels for all platforms (Linux, macOS, Windows) and Python 3.10-3.13
+#   - Build source distribution (sdist)
+#   - Publish to PyPI (or TestPyPI)
+#   - Create git tag: python/<version> and draft GitHub release (PyPI only)
+
+name: Publish Python Package
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (build only, skip publish and release)'
+        type: boolean
+        default: true
+      environment:
+        description: 'Publish to TestPyPI or PyPI (ignored during dry run)'
+        required: true
+        type: choice
+        options:
+          - testpypi
+          - pypi
+        default: 'testpypi'
+
+env:
+  package-name: atlas-python
+  MACOSX_DEPLOYMENT_TARGET: '10.13'
+
+permissions:
+  contents: read
+
+jobs:
+  build-wheels:
+    name: Build wheels (${{ matrix.os }} ${{ matrix.target }})
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64
+          - os: ubuntu-latest
+            target: aarch64
+          - os: macos-latest
+            target: x86_64
+          - os: macos-latest
+            target: aarch64
+          - os: windows-latest
+            target: x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: |
+            3.10
+            3.11
+            3.12
+            3.13
+      - name: Build wheels
+        uses: PyO3/maturin-action@86b9d133d34bc1b40018696f782949dac11bd380 # v1.49.4
+        with:
+          working-directory: python
+          target: ${{ matrix.target }}
+          args: --release --out dist --interpreter 3.10 3.11 3.12 3.13 --compatibility pypi
+          manylinux: auto
+      - name: Upload wheels
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: wheels-${{ matrix.os }}-${{ matrix.target }}
+          path: python/dist/
+
+  build-sdist:
+    name: Build sdist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build sdist
+        uses: PyO3/maturin-action@86b9d133d34bc1b40018696f782949dac11bd380 # v1.49.4
+        with:
+          working-directory: python
+          command: sdist
+          args: --out dist
+      - name: Upload sdist
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sdist
+          path: python/dist/
+
+  publish-to-pypi:
+    name: Publish to PyPI
+    if: ${{ !inputs.dry_run && inputs.environment == 'pypi' }}
+    needs: [build-wheels, build-sdist]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/${{ env.package-name }}
+    permissions:
+      contents: write
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download all distributions
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: dist/
+          merge-multiple: true
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # release/v1
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=$(grep '^version = ' python/pyproject.toml | head -1 | cut -d '"' -f2)
+          TAG="python/${VERSION}"
+          echo "version: ${VERSION}"
+          echo "tag: ${TAG}"
+
+          git tag "$TAG"
+          git push origin "$TAG"
+
+          gh release create --draft --repo ${{ github.repository }} \
+            --verify-tag "$TAG" \
+            --title "atlas-python v${VERSION}" \
+            --notes "Published atlas-python@${VERSION} to PyPI"
+
+  publish-to-testpypi:
+    name: Publish to TestPyPI
+    if: ${{ !inputs.dry_run && inputs.environment == 'testpypi' }}
+    needs: [build-wheels, build-sdist]
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/${{ env.package-name }}
+    permissions:
+      id-token: write
+
+    steps:
+      - name: Download all distributions
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: dist/
+          merge-multiple: true
+      - name: Publish to TestPyPI
+        uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
