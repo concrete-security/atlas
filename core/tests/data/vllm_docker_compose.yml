@@ -1,6 +1,6 @@
 services:
   vllm:
-    image: vllm/vllm-openai:v0.13.0
+    image: ghcr.io/concrete-security/vllm-openai@sha256:48d48c356ca737594cf7b7ea37dd5c2a921f20f0994447ca42ed1a832cbc6a38
     container_name: vllm
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
@@ -111,3 +111,4 @@ volumes:
   huggingface-cache:
   # TLS certificates and keys
   tls-certs-keys:
+
