@@ -4,6 +4,7 @@ members = [
   "wasm",
   "wasm/proxy",
   "node",
+  "python",
 ]
 resolver = "2"
 

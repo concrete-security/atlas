@@ -1,4 +1,4 @@
-.PHONY: help test test-all test-wasm test-wasm-node test-proxy build build-wasm build-node build-private-ai-sdk test-node test-private-ai-sdk clean demo-wasm setup-wasm
+.PHONY: help test test-all test-wasm test-wasm-node test-proxy build build-wasm build-node build-private-ai-sdk build-python test-node test-private-ai-sdk test-python clean demo-wasm setup-wasm
 
 CARGO ?= cargo
 DEMO_PORT ?= 8080
@@ -11,21 +11,23 @@ help:
 	@echo "  make test-wasm-node # run WASM tests in Node.js via wasm-pack"
 	@echo "  make test-node      # run Node.js binding tests"
 	@echo "  make test-private-ai-sdk # run AI provider package tests"
-	@echo "  make test-all       # run all tests (native + wasm + node + private-ai-sdk)"
+	@echo "  make test-python    # run Python binding tests"
+	@echo "  make test-all       # run all tests (native + wasm + node + python + private-ai-sdk)"
 	@echo ""
 	@echo "  make build          # build all native crates"
 	@echo "  make build-wasm     # build WASM package with wasm-pack"
 	@echo "  make build-node     # build Node.js native bindings"
 	@echo "  make build-private-ai-sdk # build AI provider package"
+	@echo "  make build-python   # build Python bindings (maturin develop)"
 	@echo "  make setup-wasm     # setup WASM toolchain (macOS only)"
 	@echo ""
 	@echo "  make demo-wasm      # run proxy + serve demo at http://localhost:$(DEMO_PORT)/demo/"
 	@echo ""
 	@echo "  make clean          # clean all build artifacts"
 
-# Native Rust tests (excludes WASM crate which needs special toolchain)
+# Native Rust tests (excludes WASM and Python crates which need special toolchains)
 test:
-	$(CARGO) test --workspace --exclude atlas-wasm
+	$(CARGO) test --workspace --exclude atlas-wasm --exclude atlas-python
 
 # Proxy unit and integration tests
 test-proxy:
@@ -47,12 +49,16 @@ test-node:
 test-private-ai-sdk:
 	cd examples/private-ai-sdk && pnpm test
 
-# All tests
-test-all: test test-wasm test-node test-private-ai-sdk
+# Python binding tests
+test-python:
+	cd python && uv run pytest -v
 
-# Build all native crates
+# All tests
+test-all: test test-wasm test-node test-python test-private-ai-sdk
+
+# Build all native crates (excludes WASM and Python which need special toolchains)
 build:
-	$(CARGO) build --workspace --exclude atlas-wasm
+	$(CARGO) build --workspace --exclude atlas-wasm --exclude atlas-python
 
 # Setup WASM toolchain (macOS only - installs LLVM with wasm32 support)
 setup-wasm:
@@ -83,6 +89,10 @@ build-node:
 # Build AI provider package
 build-private-ai-sdk:
 	cd examples/private-ai-sdk && pnpm build
+
+# Build Python bindings (development mode)
+build-python:
+	cd python && uv run maturin develop
 
 # Clean all artifacts
 clean:
