@@ -17,6 +17,10 @@ fn default_allowed_tcb_status() -> Vec<String> {
     vec!["UpToDate".to_string()]
 }
 
+fn default_accept_self_signed_certs() -> bool {
+    true
+}
+
 /// Policy configuration for dstack TDX verification.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DstackTdxPolicy {
@@ -52,6 +56,16 @@ pub struct DstackTdxPolicy {
     /// Set to true only for development/testing.
     #[serde(default)]
     pub disable_runtime_verification: bool,
+
+    /// Accept self-signed certificates during TLS handshake.
+    ///
+    /// TEEs typically generate self-signed certificates. Since trust in aTLS
+    /// comes from attestation (DCAP quote + certificate binding via event log
+    /// + EKM session binding), CA chain validation is unnecessary.
+    ///
+    /// Defaults to `true`. Set to `false` to require CA-signed certificates.
+    #[serde(default = "default_accept_self_signed_certs")]
+    pub accept_self_signed_certs: bool,
 }
 
 impl Default for DstackTdxPolicy {
@@ -64,13 +78,16 @@ impl Default for DstackTdxPolicy {
             pccs_url: default_pccs_url(),
             cache_collateral: false,
             disable_runtime_verification: false,
+            accept_self_signed_certs: true,
         }
     }
 }
 
 /// Check if a string is a valid lowercase hex string.
 fn is_valid_hex(s: &str) -> bool {
-    !s.is_empty() && s.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+    !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
 }
 
 impl DstackTdxPolicy {
@@ -191,12 +208,15 @@ mod tests {
         assert_eq!(policy.allowed_tcb_status, vec!["UpToDate"]);
         assert!(policy.expected_bootchain.is_none());
         assert!(!policy.disable_runtime_verification);
+        assert!(policy.accept_self_signed_certs);
     }
 
     #[test]
     fn test_dstack_tdx_policy_dev() {
         let policy = DstackTdxPolicy::dev();
-        assert!(policy.allowed_tcb_status.contains(&"SWHardeningNeeded".to_string()));
+        assert!(policy
+            .allowed_tcb_status
+            .contains(&"SWHardeningNeeded".to_string()));
         assert!(policy.disable_runtime_verification);
     }
 

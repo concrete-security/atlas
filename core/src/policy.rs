@@ -54,11 +54,16 @@ impl Policy {
     /// let policy = Policy::DstackTdx(DstackTdxPolicy::dev());
     /// let verifier = policy.into_verifier().unwrap();
     /// ```
+    /// Whether the policy allows accepting self-signed certificates during TLS handshake.
+    pub fn accept_self_signed_certs(&self) -> bool {
+        match self {
+            Policy::DstackTdx(policy) => policy.accept_self_signed_certs,
+        }
+    }
+
     pub fn into_verifier(self) -> Result<Verifier, AtlsVerificationError> {
         match self {
-            Policy::DstackTdx(policy) => {
-                Ok(Verifier::DstackTdx(policy.into_verifier()?))
-            }
+            Policy::DstackTdx(policy) => Ok(Verifier::DstackTdx(policy.into_verifier()?)),
         }
     }
 }
@@ -83,7 +88,9 @@ mod tests {
         let policy = Policy::DstackTdx(DstackTdxPolicy::dev());
         match policy {
             Policy::DstackTdx(tdx) => {
-                assert!(tdx.allowed_tcb_status.contains(&"SWHardeningNeeded".to_string()));
+                assert!(tdx
+                    .allowed_tcb_status
+                    .contains(&"SWHardeningNeeded".to_string()));
             }
         }
     }
