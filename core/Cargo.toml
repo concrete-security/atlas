@@ -24,6 +24,8 @@ sha2 = "0.10"
 hex = "0.4"
 log = "0.4"
 anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+pem = "3"
 rustls-pki-types = { version = "1", features = ["std", "web"] }
 webpki-roots = "0.26"
 

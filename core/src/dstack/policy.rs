@@ -36,6 +36,13 @@ pub struct DstackTdxPolicy {
     #[serde(default = "default_allowed_tcb_status")]
     pub allowed_tcb_status: Vec<String>,
 
+    /// Grace period (seconds) for OutOfDate platforms.
+    ///
+    /// If set and the platform TCB status is OutOfDate, the platform is allowed
+    /// only if its TCB date plus this duration is >= current time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grace_period: Option<u64>,
+
     /// PCCS URL for collateral fetching.
     /// Defaults to `https://pccs.phala.network/tdx/certification/v4`.
     #[serde(default = "default_pccs_url", skip_serializing_if = "Option::is_none")]
@@ -61,6 +68,7 @@ impl Default for DstackTdxPolicy {
             app_compose: None,
             os_image_hash: None,
             allowed_tcb_status: default_allowed_tcb_status(),
+            grace_period: None,
             pccs_url: default_pccs_url(),
             cache_collateral: false,
             disable_runtime_verification: false,
@@ -96,6 +104,7 @@ impl DstackTdxPolicy {
     /// - `allowed_tcb_status` values are valid TCB status strings
     /// - `os_image_hash` is a valid hex string (if provided)
     /// - `expected_bootchain` fields are valid hex strings (if provided)
+    /// - `grace_period` requires `allowed_tcb_status` to include `OutOfDate`
     pub fn validate(&self) -> Result<(), AtlsVerificationError> {
         // Validate TCB status values
         for status in &self.allowed_tcb_status {
@@ -104,6 +113,16 @@ impl DstackTdxPolicy {
                     "invalid TCB status '{}', valid values are: {:?}",
                     status, TCB_STATUS_LIST
                 )));
+            }
+        }
+
+        // Validate grace period policy requirements
+        if self.grace_period.is_some() {
+            if !self.allowed_tcb_status.iter().any(|s| s == "OutOfDate") {
+                return Err(AtlsVerificationError::Configuration(
+                    "grace_period requires allowed_tcb_status to include OutOfDate"
+                        .into(),
+                ));
             }
         }
 
@@ -170,6 +189,9 @@ impl IntoVerifier for DstackTdxPolicy {
         }
 
         builder = builder.allowed_tcb_status(self.allowed_tcb_status);
+        if let Some(grace) = self.grace_period {
+            builder = builder.grace_period(grace);
+        }
 
         if let Some(pccs) = self.pccs_url {
             builder = builder.pccs_url(pccs);
@@ -240,6 +262,31 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("invalid TCB status"));
+    }
+
+    #[test]
+    fn test_grace_period_requires_out_of_date_status() {
+        let policy = DstackTdxPolicy {
+            grace_period: Some(0),
+            allowed_tcb_status: vec!["UpToDate".into()],
+            disable_runtime_verification: true,
+            ..Default::default()
+        };
+        let result = policy.validate();
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("grace_period requires"));
+    }
+
+    #[test]
+    fn test_grace_period_with_out_of_date_status_allowed() {
+        let policy = DstackTdxPolicy {
+            grace_period: Some(3600),
+            allowed_tcb_status: vec!["UpToDate".into(), "OutOfDate".into()],
+            disable_runtime_verification: true,
+            ..Default::default()
+        };
+        assert!(policy.validate().is_ok());
     }
 
     #[test]
