@@ -1,6 +1,6 @@
 services:
   vllm:
-    image: vllm/vllm-openai:v0.13.0
+    image: ghcr.io/concrete-security/vllm-openai@sha256:d6ee07e203f0e43dc6b80b600b972fe1dfc9e0eed7810343a4a1beb7727d5062
     container_name: vllm
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
