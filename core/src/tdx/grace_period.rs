@@ -25,7 +25,7 @@ pub fn enforce_grace_period(
         return Ok(());
     }
 
-    let tcb_date = extract_tcb_date(quote, collateral)?;
+    let tcb_date = extract_tcb_date(quote, collateral, &report.status)?;
     let tcb_date_secs = DateTime::parse_from_rfc3339(&tcb_date)
         .map_err(|e| AtlsVerificationError::TcbInfoError(format!("invalid TCB date: {}", e)))?
         .timestamp();
@@ -78,6 +78,7 @@ struct TcbInfo {
 struct TcbLevel {
     tcb: Tcb,
     tcb_date: String,
+    tcb_status: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -99,6 +100,7 @@ struct TcbComponent {
 fn extract_tcb_date(
     quote: &Quote,
     collateral: &QuoteCollateralV3,
+    expected_status: &str,
 ) -> Result<String, AtlsVerificationError> {
     let tcb_info: TcbInfo = serde_json::from_str(&collateral.tcb_info).map_err(|e| {
         AtlsVerificationError::TcbInfoError(format!("failed to parse TCB info: {}", e))
@@ -116,6 +118,13 @@ fn extract_tcb_date(
         pck_extension.pce_svn,
         &pck_extension.fmspc,
     )?;
+
+    if tcb_level.tcb_status != expected_status {
+        return Err(AtlsVerificationError::TcbInfoError(format!(
+            "matched TCB level has status '{}', expected '{}'",
+            tcb_level.tcb_status, expected_status
+        )));
+    }
 
     Ok(tcb_level.tcb_date.clone())
 }
