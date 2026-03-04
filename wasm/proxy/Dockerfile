@@ -18,13 +18,14 @@ COPY core ./core
 COPY wasm/proxy ./wasm/proxy
 
 # Build only the proxy binary
-RUN cargo build -p ratls-proxy --release
+RUN cargo build -p ratls-proxy --release --locked
 
 # Runtime stage - minimal image
 FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y \
     ca-certificates \
+    netcat-openbsd \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy the binary from builder
@@ -32,8 +33,7 @@ COPY --from=builder /app/target/release/ratls-proxy /usr/local/bin/
 
 # Default environment variables
 ENV RATLS_PROXY_LISTEN=0.0.0.0:9000
-ENV RATLS_PROXY_TARGET=127.0.0.1:8443
-# RATLS_PROXY_ALLOWLIST must be set at runtime
+# RATLS_PROXY_TARGET and RATLS_PROXY_ALLOWLIST must be set at runtime
 
 EXPOSE 9000
 

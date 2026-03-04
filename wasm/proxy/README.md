@@ -169,24 +169,41 @@ Browser                     Proxy                       TEE
 
 ## Deployment
 
-### Quick Start (AWS/Ubuntu)
+### Quick Start
 
-1. Launch an EC2 instance (Ubuntu 24.04, t3.medium recommended)
-2. Configure security groups: SSH (22), HTTP (80), HTTPS (443)
-3. Point your domain DNS to the instance IP
-4. Run the setup script:
+1. Point your domain DNS to the host IP
+2. Clone and deploy:
 
 ```bash
-git clone <your-repo-url> secure-channel
-cd secure-channel/wasm/proxy/deploy
-sudo ./setup.sh proxy.yourdomain.com tee.backend.com:443
+git clone git@github.com:concrete-security/atlas.git
+cd atlas/wasm/proxy/deploy
+DOMAIN=proxy.yourdomain.com TEE_TARGET=tee.backend.com:443 ALLOWLIST=tee.backend.com:443 \
+  docker compose up -d
 ```
 
-This installs Caddy (for TLS), builds the proxy, and configures systemd services.
+Caddy automatically obtains and renews TLS certificates via Let's Encrypt.
 
-### Docker Deployment
+### Configuration
 
-Build and run the container:
+Set environment variables before running `docker compose up`:
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `DOMAIN` | Public domain for the proxy | `proxy.example.com` |
+| `TEE_TARGET` | Default TEE backend `host:port` | `tee.backend.com:443` |
+| `ALLOWLIST` | Comma-separated allowed `host:port` pairs | `tee.backend.com:443,backup:443` |
+
+You can also create a `.env` file in the `deploy/` directory:
+
+```bash
+DOMAIN=proxy.example.com
+TEE_TARGET=tee.backend.com:443
+ALLOWLIST=tee.backend.com:443
+```
+
+### Standalone Docker
+
+To run the proxy without Caddy (e.g., behind your own reverse proxy):
 
 ```bash
 # Build from repository root
@@ -200,33 +217,25 @@ docker run -d \
   atlas-proxy
 ```
 
-For production, place behind a reverse proxy (Caddy/nginx) for TLS termination.
+### Deploy Directory
 
-### Manual Deployment
-
-See `deploy/` directory for:
-- `Caddyfile` - Caddy reverse proxy template
-- `setup.sh` - automated setup script
-- `docker-compose.yml` - Docker Compose deployment
-
-### Configuration Files
-
-After running `setup.sh`, configuration is stored in:
-- `/etc/caddy/Caddyfile` - reverse proxy config
+See `deploy/` for:
+- `docker-compose.yml` - production deployment with Caddy + proxy
+- `Caddyfile` - Caddy reverse proxy config (used by docker-compose)
+- `benchmark.mjs` - performance comparison script
+- `BENCHMARK.md` - benchmark results
 
 ## Benchmarking
 
 Compare direct vs proxy latency:
 
 ```bash
-./deploy/benchmark.sh https://tee.backend.com:443 wss://proxy.yourdomain.com/tunnel 50
+cd deploy
+npm install ws
+node benchmark.mjs [iterations] [max_tokens]
 ```
 
-Metrics collected:
-- TCP connection time
-- TLS handshake time
-- Total request latency
-- p50/p95/p99 percentiles
+See `deploy/BENCHMARK.md` for detailed results and methodology.
 
 ## See Also
 

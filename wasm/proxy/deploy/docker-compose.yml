@@ -1,0 +1,31 @@
+services:
+  proxy:
+    build:
+      context: ../../..
+      dockerfile: wasm/proxy/Dockerfile
+    environment:
+      - RATLS_PROXY_LISTEN=0.0.0.0:9000
+      - RATLS_PROXY_TARGET=${TEE_TARGET:?Set TEE_TARGET to your TEE backend host:port}
+      - RATLS_PROXY_ALLOWLIST=${ALLOWLIST:?Set ALLOWLIST to comma-separated allowed host:port pairs}
+    expose:
+      - "9000"
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2
+    depends_on:
+      - proxy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      - DOMAIN=${DOMAIN:?Set DOMAIN to your proxy domain}
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:
