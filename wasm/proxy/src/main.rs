@@ -21,7 +21,18 @@ fn parse_allowlist(env_var: &str) -> HashSet<String> {
 }
 
 fn is_target_allowed(target: &str, allowlist: &HashSet<String>) -> bool {
-    allowlist.contains(target)
+    if allowlist.contains(target) {
+        return true;
+    }
+    // Support wildcard patterns like *.mydomain.com:443
+    for pattern in allowlist.iter() {
+        if let Some(suffix) = pattern.strip_prefix('*') {
+            if target.ends_with(suffix) && !suffix.is_empty() {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 async fn handle_ws(
@@ -242,6 +253,40 @@ mod tests {
     fn test_is_target_allowed_empty_list() {
         let allowlist = HashSet::new();
         assert!(!is_target_allowed("any:443", &allowlist));
+    }
+
+    #[test]
+    fn test_is_target_allowed_wildcard_match() {
+        let mut allowlist = HashSet::new();
+        allowlist.insert("*.mydomain.com:443".to_string());
+
+        assert!(is_target_allowed("124098140.mydomain.com:443", &allowlist));
+        assert!(is_target_allowed("sub.mydomain.com:443", &allowlist));
+        assert!(is_target_allowed("a.b.mydomain.com:443", &allowlist));
+    }
+
+    #[test]
+    fn test_is_target_allowed_wildcard_no_match() {
+        let mut allowlist = HashSet::new();
+        allowlist.insert("*.mydomain.com:443".to_string());
+
+        // Different port
+        assert!(!is_target_allowed("sub.mydomain.com:8443", &allowlist));
+        // Different domain
+        assert!(!is_target_allowed("sub.otherdomain.com:443", &allowlist));
+        // Bare domain (no subdomain) does not match *.
+        assert!(!is_target_allowed("mydomain.com:443", &allowlist));
+    }
+
+    #[test]
+    fn test_is_target_allowed_wildcard_and_exact_mixed() {
+        let mut allowlist = HashSet::new();
+        allowlist.insert("*.mydomain.com:443".to_string());
+        allowlist.insert("specific.host:8443".to_string());
+
+        assert!(is_target_allowed("any.mydomain.com:443", &allowlist));
+        assert!(is_target_allowed("specific.host:8443", &allowlist));
+        assert!(!is_target_allowed("specific.host:443", &allowlist));
     }
 
     #[test]
