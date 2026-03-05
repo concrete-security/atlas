@@ -33,7 +33,7 @@ services:
 
   # Combined Nginx reverse proxy and Certificate Manager
   nginx-cert-manager:
-    image: ghcr.io/concrete-security/cert-manager@sha256:1af9c4381774484be345eb6bbc6216c8020367e78b06b15c875a7fe5eb63a872
+    image: ghcr.io/concrete-security/cert-manager@sha256:c9df1c648a82760585e997613ea28d214a05363d3e96d575e501c373b90eab50
     container_name: nginx-cert-manager
     ports:
       - "80:80"
@@ -49,8 +49,6 @@ services:
       - FORCE_RM_CERT_FILES=false
       # Set log level
       - LOG_LEVEL=INFO
-      # Shared secret for EKM header HMAC signing (required for security)
-      - EKM_SHARED_SECRET=${EKM_SHARED_SECRET}
     volumes:
       - tls-certs-keys:/etc/nginx/ssl/
       - /var/run/dstack.sock:/var/run/dstack.sock
@@ -77,15 +75,13 @@ services:
 
   # TDX Attestation service
   attestation-service:
-    image: ghcr.io/concrete-security/attestation-service@sha256:51e52f431cbae53a50b258733283199fcde983a53531f65067da8ac07b5fb7ad
+    image: ghcr.io/concrete-security/attestation-service@sha256:e7f82b46cf749333a911c947db88544aa545c62aaa98297ba7e3b47dc5082340
     container_name: attestation-service
     environment:
       - HOST=0.0.0.0
       - PORT=8080
       # Keep it to 1 if you want replication at the container orchestration level (see deploy.replicas)
       - WORKERS=8
-      # Shared secret for EKM header HMAC validation (must match nginx)
-      - EKM_SHARED_SECRET=${EKM_SHARED_SECRET}
     volumes:
       - /var/run/dstack.sock:/var/run/dstack.sock
     expose:

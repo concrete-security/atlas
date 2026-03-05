@@ -1,0 +1,60 @@
+[project]
+name = "atlas-python"
+version = "0.1.0"
+description = "aTLS client for Python - httpx client for Trusted Execution Environments"
+readme = "README.md"
+requires-python = ">=3.10"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Rust",
+    "Topic :: Security :: Cryptography",
+]
+dependencies = [
+    # Pinned: we access httpcore internal _pool._network_backend (see sync_client.py).
+    # Bump upper bound only after verifying the internals still work.
+    "httpx>=0.28.1,<0.29",
+]
+
+[dependency-groups]
+dev = [
+    "ruff",
+    "maturin",
+]
+test = [
+    "pytest",
+    "pytest-cov",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # pyflakes
+    "I",      # isort
+    "C4",     # flake8-comprehensions
+    "ARG001", # unused arguments in functions
+]
+
+ignore = [
+    "E501",  # line too long
+]
+
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[tool.maturin]
+python-source = "src"
+module-name = "atlas._atlas"
+features = ["pyo3/extension-module"]
+
+[project.urls]
+Repository = "https://github.com/concrete-security/atlas"
+Issues = "https://github.com/concrete-security/atlas/issues"
