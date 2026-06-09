@@ -1,6 +1,6 @@
 //! DStack-specific policy types.
 
-use crate::dstack::{DstackTDXVerifier, DstackTDXVerifierBuilder};
+use crate::dstack::{DstackTDXVerifier, DstackTDXVerifierBuilder, RuntimeEventExpectation};
 use crate::tdx::{ExpectedBootchain, TCB_STATUS_LIST};
 use crate::verifier::IntoVerifier;
 use crate::AtlsVerificationError;
@@ -31,6 +31,13 @@ pub struct DstackTdxPolicy {
     /// Expected OS image hash (SHA256).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub os_image_hash: Option<String>,
+
+    /// Expected runtime RTMR3 events to pin (by name → hex payload).
+    ///
+    /// Empty by default (backward-compatible). When set, each named event must
+    /// appear in the RTMR-replay-trusted event log with a matching payload.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expected_runtime_events: Vec<RuntimeEventExpectation>,
 
     /// Allowed TCB status values.
     #[serde(default = "default_allowed_tcb_status")]
@@ -67,6 +74,7 @@ impl Default for DstackTdxPolicy {
             expected_bootchain: None,
             app_compose: None,
             os_image_hash: None,
+            expected_runtime_events: Vec::new(),
             allowed_tcb_status: default_allowed_tcb_status(),
             grace_period: None,
             pccs_url: default_pccs_url(),
@@ -135,6 +143,27 @@ impl DstackTdxPolicy {
             }
         }
 
+        // Validate pinned runtime events
+        if self.disable_runtime_verification && !self.expected_runtime_events.is_empty() {
+            return Err(AtlsVerificationError::Configuration(
+                "expected_runtime_events cannot be set when disable_runtime_verification is true"
+                    .into(),
+            ));
+        }
+        for ev in &self.expected_runtime_events {
+            if ev.event.is_empty() {
+                return Err(AtlsVerificationError::Configuration(
+                    "expected_runtime_events entry has an empty event name".into(),
+                ));
+            }
+            if !is_valid_hex(&ev.payload) {
+                return Err(AtlsVerificationError::Configuration(format!(
+                    "expected_runtime_events payload for '{}' must be a lowercase hex string",
+                    ev.event
+                )));
+            }
+        }
+
         // Validate bootchain fields are hex
         if let Some(ref bootchain) = self.expected_bootchain {
             if !is_valid_hex(&bootchain.mrtd) {
@@ -186,6 +215,9 @@ impl IntoVerifier for DstackTdxPolicy {
         }
         if let Some(os_hash) = self.os_image_hash {
             builder = builder.os_image_hash(os_hash);
+        }
+        if !self.expected_runtime_events.is_empty() {
+            builder = builder.expected_runtime_events(self.expected_runtime_events);
         }
 
         builder = builder.allowed_tcb_status(self.allowed_tcb_status);
@@ -340,5 +372,76 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("mrtd"));
+    }
+
+    fn runtime_event(event: &str, payload: &str) -> RuntimeEventExpectation {
+        RuntimeEventExpectation {
+            event: event.into(),
+            payload: payload.into(),
+        }
+    }
+
+    #[test]
+    fn test_runtime_events_valid() {
+        let policy = DstackTdxPolicy {
+            expected_runtime_events: vec![runtime_event("concrete-security-cvm", "abcd1234")],
+            os_image_hash: Some("abcd".into()),
+            expected_bootchain: Some(ExpectedBootchain {
+                mrtd: "00".into(),
+                rtmr0: "00".into(),
+                rtmr1: "00".into(),
+                rtmr2: "00".into(),
+            }),
+            ..Default::default()
+        };
+        assert!(policy.validate().is_ok());
+    }
+
+    #[test]
+    fn test_runtime_events_invalid_hex_rejected() {
+        let policy = DstackTdxPolicy {
+            expected_runtime_events: vec![runtime_event("concrete-security-cvm", "not-hex!")],
+            disable_runtime_verification: false,
+            ..Default::default()
+        };
+        let err = policy.validate().unwrap_err().to_string();
+        assert!(err.contains("must be a lowercase hex string"));
+    }
+
+    #[test]
+    fn test_runtime_events_empty_name_rejected() {
+        let policy = DstackTdxPolicy {
+            expected_runtime_events: vec![runtime_event("", "abcd")],
+            ..Default::default()
+        };
+        let err = policy.validate().unwrap_err().to_string();
+        assert!(err.contains("empty event name"));
+    }
+
+    #[test]
+    fn test_runtime_events_conflict_with_disable_rejected() {
+        let policy = DstackTdxPolicy {
+            expected_runtime_events: vec![runtime_event("concrete-security-cvm", "abcd")],
+            disable_runtime_verification: true,
+            ..Default::default()
+        };
+        let err = policy.validate().unwrap_err().to_string();
+        assert!(err.contains("disable_runtime_verification"));
+    }
+
+    #[test]
+    fn test_runtime_events_json_roundtrip_and_default_empty() {
+        // Absent in JSON => empty (backward compatible).
+        let parsed: DstackTdxPolicy = serde_json::from_str("{}").unwrap();
+        assert!(parsed.expected_runtime_events.is_empty());
+
+        let policy = DstackTdxPolicy {
+            expected_runtime_events: vec![runtime_event("concrete-security-cvm", "abcd1234")],
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&policy).unwrap();
+        assert!(json.contains("expected_runtime_events"));
+        let back: DstackTdxPolicy = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.expected_runtime_events, policy.expected_runtime_events);
     }
 }

@@ -404,6 +404,42 @@ impl DstackTDXVerifier {
         Ok(())
     }
 
+    /// Verify pinned runtime RTMR3 events against the trusted event log.
+    ///
+    /// The event log integrity is guaranteed by RTMR replay verification against
+    /// the cryptographically verified report. For each expected event, the *last*
+    /// occurrence with a matching name must carry the expected payload (last wins,
+    /// so a value re-emitted on rotation supersedes earlier emissions).
+    fn verify_runtime_events(&self, events: &[EventLog]) -> Result<(), AtlsVerificationError> {
+        for expected in &self.config.expected_runtime_events {
+            debug!(
+                "Verifying runtime event '{}' against trusted event log",
+                expected.event
+            );
+            match events.iter().rfind(|e| e.event == expected.event) {
+                Some(event) if event.event_payload == expected.payload => {
+                    debug!("Runtime event '{}' matched", expected.event);
+                }
+                Some(event) => {
+                    return Err(AtlsVerificationError::RuntimeEventMismatch {
+                        event: expected.event.clone(),
+                        expected: expected.payload.clone(),
+                        actual: Some(event.event_payload.clone()),
+                    });
+                }
+                None => {
+                    return Err(AtlsVerificationError::RuntimeEventMismatch {
+                        event: expected.event.clone(),
+                        expected: expected.payload.clone(),
+                        actual: None,
+                    });
+                }
+            }
+        }
+        debug!("Runtime event verification successful");
+        Ok(())
+    }
+
     /// Verify RTMR replay using dstack-sdk's built-in replay_rtmrs().
     ///
     /// Compares replayed RTMRs from the event log against the trusted values
@@ -574,6 +610,9 @@ impl AtlsVerifier for DstackTDXVerifier {
         // 9. Verify OS image hash against trusted event log
         self.verify_os_image_hash(&events)?;
 
+        // 10. Verify pinned runtime RTMR3 events against trusted event log
+        self.verify_runtime_events(&events)?;
+
         debug!("DStack TDX verification complete");
         Ok(Report::Tdx(verified_report))
     }
@@ -682,4 +721,118 @@ fn parse_content_length(headers: &[u8]) -> Option<usize> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dstack::config::{DstackTDXVerifierConfig, RuntimeEventExpectation};
+    use crate::error::AtlsVerificationError;
+
+    fn event(name: &str, payload: &str) -> EventLog {
+        EventLog {
+            imr: 3,
+            event_type: 0x0800_0001,
+            digest: "00".repeat(48),
+            event: name.to_string(),
+            event_payload: payload.to_string(),
+        }
+    }
+
+    fn verifier_with(expected: Vec<RuntimeEventExpectation>) -> DstackTDXVerifier {
+        // disable_runtime_verification lets us build a verifier without the
+        // bootchain/app_compose/os_image fields; we test verify_runtime_events directly.
+        DstackTDXVerifier::new(DstackTDXVerifierConfig {
+            disable_runtime_verification: true,
+            expected_runtime_events: expected,
+            ..Default::default()
+        })
+        .unwrap()
+    }
+
+    fn expect(event: &str, payload: &str) -> RuntimeEventExpectation {
+        RuntimeEventExpectation {
+            event: event.to_string(),
+            payload: payload.to_string(),
+        }
+    }
+
+    #[test]
+    fn runtime_event_present_and_matching_passes() {
+        let v = verifier_with(vec![expect("concrete-security-cvm", "abcd")]);
+        let events = vec![
+            event("compose-hash", "ffff"),
+            event("concrete-security-cvm", "abcd"),
+        ];
+        assert!(v.verify_runtime_events(&events).is_ok());
+    }
+
+    #[test]
+    fn runtime_event_missing_fails() {
+        let v = verifier_with(vec![expect("concrete-security-cvm", "abcd")]);
+        let events = vec![event("compose-hash", "ffff")];
+        let err = v.verify_runtime_events(&events).unwrap_err();
+        assert!(matches!(
+            err,
+            AtlsVerificationError::RuntimeEventMismatch { actual: None, .. }
+        ));
+    }
+
+    #[test]
+    fn runtime_event_wrong_payload_fails() {
+        let v = verifier_with(vec![expect("concrete-security-cvm", "abcd")]);
+        let events = vec![event("concrete-security-cvm", "dead")];
+        let err = v.verify_runtime_events(&events).unwrap_err();
+        match err {
+            AtlsVerificationError::RuntimeEventMismatch {
+                actual: Some(a),
+                expected,
+                ..
+            } => {
+                assert_eq!(a, "dead");
+                assert_eq!(expected, "abcd");
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn runtime_event_last_occurrence_wins() {
+        let v = verifier_with(vec![expect("concrete-security-cvm", "newv")]);
+        // An old value followed by the rotated value: last wins => passes.
+        let events = vec![
+            event("concrete-security-cvm", "oldv"),
+            event("concrete-security-cvm", "newv"),
+        ];
+        assert!(v.verify_runtime_events(&events).is_ok());
+
+        // If the latest no longer matches the pinned value, it must fail.
+        let stale = verifier_with(vec![expect("concrete-security-cvm", "oldv")]);
+        assert!(stale.verify_runtime_events(&events).is_err());
+    }
+
+    #[test]
+    fn multiple_expected_events_all_required() {
+        let v = verifier_with(vec![
+            expect("concrete-dev-binding", "1111"),
+            expect("concrete-security-cvm", "2222"),
+        ]);
+        let ok = vec![
+            event("concrete-dev-binding", "1111"),
+            event("concrete-security-cvm", "2222"),
+        ];
+        assert!(v.verify_runtime_events(&ok).is_ok());
+
+        let missing_one = vec![event("concrete-dev-binding", "1111")];
+        assert!(v.verify_runtime_events(&missing_one).is_err());
+    }
+
+    #[test]
+    fn no_expected_events_is_noop() {
+        let v = verifier_with(vec![]);
+        assert!(v.verify_runtime_events(&[]).is_ok());
+        assert!(v
+            .verify_runtime_events(&[event("compose-hash", "ffff")])
+            .is_ok());
+    }
 }
