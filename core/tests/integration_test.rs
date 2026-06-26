@@ -206,6 +206,7 @@ mod integration {
     /// Test verifier with runtime verification disabled.
     /// This is the simplest test - it only verifies DCAP quote and RTMR replay.
     #[tokio::test]
+    #[ignore = "live enclave vllm.concrete-security.com decommissioned; needs offline fixtures or a new endpoint"]
     async fn test_verifier_disabled_runtime_verification() {
         let verifier = DstackTDXVerifierBuilder::new()
             .disable_runtime_verification()
@@ -237,6 +238,7 @@ mod integration {
 
     /// Test that a policy with grace_period set still verifies when the platform is not OutOfDate.
     #[tokio::test]
+    #[ignore = "live enclave vllm.concrete-security.com decommissioned; needs offline fixtures or a new endpoint"]
     async fn test_policy_grace_period_allows_non_outofdate() {
         let tcp = tokio::net::TcpStream::connect(format!("{}:443", TEST_HOST))
             .await
@@ -262,6 +264,7 @@ mod integration {
 
     /// Test grace period behavior by forcing an OutOfDate status on a real quote.
     #[tokio::test]
+    #[ignore = "live enclave vllm.concrete-security.com decommissioned; needs offline fixtures or a new endpoint"]
     async fn test_grace_period_outofdate_paths() {
         let mut nonce = [0u8; 32];
         rand::Rng::fill(&mut rand::thread_rng(), &mut nonce);
@@ -323,6 +326,7 @@ mod integration {
     /// Test verifier with bootchain verification.
     /// This verifies DCAP quote, RTMR replay, and bootchain measurements.
     #[tokio::test]
+    #[ignore = "live enclave vllm.concrete-security.com decommissioned; needs offline fixtures or a new endpoint"]
     async fn test_verifier_bootchain_verification() {
         // Use a minimal app_compose just to satisfy the builder
         // We won't actually verify it matches since we don't know the exact compose
@@ -363,6 +367,7 @@ mod integration {
 
     /// Test that verifier fails with wrong bootchain measurements.
     #[tokio::test]
+    #[ignore = "live enclave vllm.concrete-security.com decommissioned; needs offline fixtures or a new endpoint"]
     async fn test_verifier_wrong_bootchain_fails() {
         let wrong_bootchain = ExpectedBootchain {
             mrtd: "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000".to_string(),
@@ -403,6 +408,7 @@ mod integration {
     /// docker-compose file that matches the server, this test actually verifies that some
     /// verification fails. We use disable_runtime_verification to test OS hash in isolation.
     #[tokio::test]
+    #[ignore = "live enclave vllm.concrete-security.com decommissioned; needs offline fixtures or a new endpoint"]
     async fn test_verifier_fails_with_wrong_config() {
         let wrong_os_hash = "0000000000000000000000000000000000000000000000000000000000000000";
 
@@ -441,6 +447,7 @@ mod integration {
 
     /// Test multiple verifications with the same verifier instance.
     #[tokio::test]
+    #[ignore = "live enclave vllm.concrete-security.com decommissioned; needs offline fixtures or a new endpoint"]
     async fn test_verifier_multiple_connections() {
         let verifier = DstackTDXVerifierBuilder::new()
             .disable_runtime_verification()
@@ -467,6 +474,7 @@ mod integration {
 
     /// Test that collateral caching works correctly across multiple verifications.
     #[tokio::test]
+    #[ignore = "live enclave vllm.concrete-security.com decommissioned; needs offline fixtures or a new endpoint"]
     async fn test_collateral_caching() {
         let verifier = DstackTDXVerifierBuilder::new()
             .disable_runtime_verification()
@@ -494,6 +502,7 @@ mod integration {
     /// Test using the async verifier from synchronous code.
     /// This demonstrates how to use the async API with a blocking runtime wrapper.
     #[test]
+    #[ignore = "live enclave vllm.concrete-security.com decommissioned; needs offline fixtures or a new endpoint"]
     fn test_verifier_sync_wrapper() {
         // Ensure crypto provider is installed
         ensure_crypto_provider();
@@ -528,6 +537,7 @@ mod integration {
 
     /// Test the high-level atls_connect API with full verification policy.
     #[tokio::test]
+    #[ignore = "live enclave vllm.concrete-security.com decommissioned; needs offline fixtures or a new endpoint"]
     async fn test_atls_connect_full_verification() {
         let tcp = tokio::net::TcpStream::connect(format!("{}:443", TEST_HOST))
             .await
@@ -567,6 +577,7 @@ mod integration {
 
     /// Test atls_connect with ALPN protocols and full verification.
     #[tokio::test]
+    #[ignore = "live enclave vllm.concrete-security.com decommissioned; needs offline fixtures or a new endpoint"]
     async fn test_atls_connect_with_alpn() {
         let tcp = tokio::net::TcpStream::connect(format!("{}:443", TEST_HOST))
             .await
@@ -610,6 +621,7 @@ mod integration {
 
     /// Test tls_handshake separately.
     #[tokio::test]
+    #[ignore = "live enclave vllm.concrete-security.com decommissioned; needs offline fixtures or a new endpoint"]
     async fn test_tls_handshake_only() {
         let tcp = tokio::net::TcpStream::connect(format!("{}:443", TEST_HOST))
             .await

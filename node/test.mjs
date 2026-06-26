@@ -48,6 +48,7 @@ const DEV_POLICY = {
 // Test helpers
 let passed = 0
 let failed = 0
+let skipped = 0
 
 function test(name, fn) {
   return async () => {
@@ -61,6 +62,12 @@ function test(name, fn) {
       failed++
     }
   }
+}
+
+// Skip a test without removing it (e.g. it needs a live endpoint). Mirrors Rust's #[ignore].
+test.skip = (name, _fn) => async () => {
+  console.log(`⊘ ${name} (skipped)`)
+  skipped++
 }
 
 function assert(condition, message) {
@@ -258,7 +265,9 @@ const tests = [
     assert(typeof mainExports.mergeWithDefaultAppCompose === "function", "mergeWithDefaultAppCompose not exported")
   }),
 
-  test("full verification against vllm.concrete-security.com", async () => {
+  // Skipped: live enclave vllm.concrete-security.com decommissioned. Repoint to a
+  // new endpoint or convert to offline fixtures to re-enable.
+  test.skip("full verification against vllm.concrete-security.com", async () => {
     const fetch = createAtlsFetch({
       target: "vllm.concrete-security.com",
       policy: VLLM_POLICY,
@@ -293,7 +302,7 @@ async function main() {
   }
 
   console.log("\n================================")
-  console.log(`Results: ${passed} passed, ${failed} failed`)
+  console.log(`Results: ${passed} passed, ${failed} failed, ${skipped} skipped`)
 
   // Gracefully close all sockets before exiting
   await binding.closeAllSockets()
