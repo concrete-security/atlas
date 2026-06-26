@@ -20,7 +20,8 @@ Prebuilt binaries are included for:
 ```typescript
 import { createAtlsFetch } from "@concrete-security/atlas-node"
 
-const fetch = createAtlsFetch("enclave.example.com")
+// `policy` is required — see "Policy Configuration" below.
+const fetch = createAtlsFetch({ target: "enclave.example.com", policy })
 const response = await fetch("/api/secure-data")
 
 console.log(response.attestation.trusted)  // true
@@ -38,6 +39,7 @@ import { streamText } from "ai"
 
 const fetch = createAtlsFetch({
   target: "enclave.example.com",
+  policy,  // required — see "Policy Configuration" below
   onAttestation: (att) => console.log(`TEE verified: ${att.teeType}`)
 })
 
@@ -62,23 +64,15 @@ for await (const chunk of textStream) {
 
 ## API
 
-### `createAtlsFetch(target)`
-
-Create an attested fetch function with a simple target string:
-
-```typescript
-const fetch = createAtlsFetch("enclave.example.com")
-// or with port
-const fetch = createAtlsFetch("enclave.example.com:8443")
-```
-
 ### `createAtlsFetch(options)`
 
-Create with full configuration:
+`createAtlsFetch` takes an options object; `target` and `policy` are required.
+(The string shorthand `createAtlsFetch("host")` is no longer supported.)
 
 ```typescript
 const fetch = createAtlsFetch({
   target: "enclave.example.com",      // Required: host with optional port
+  policy,                             // Required: verification policy (see "Policy Configuration")
   serverName: "enclave.example.com",  // Optional: SNI override
   headers: { "X-Custom": "value" },   // Optional: default headers
   onAttestation: (attestation) => {   // Optional: attestation callback
@@ -101,6 +95,7 @@ import https from "https"
 
 const agent = createAtlsAgent({
   target: "enclave.example.com",
+  policy,  // required — see "Policy Configuration" below
   onAttestation: (att) => console.log("Verified:", att.teeType)
 })
 
@@ -258,7 +253,7 @@ Full TypeScript definitions are included:
 ```typescript
 import { createAtlsFetch, AtlsFetch, AtlsAttestation, AtlsResponse } from "@concrete-security/atlas-node"
 
-const fetch: AtlsFetch = createAtlsFetch("enclave.example.com")
+const fetch: AtlsFetch = createAtlsFetch({ target: "enclave.example.com", policy })
 
 const response: AtlsResponse = await fetch("/api")
 const attestation: AtlsAttestation = response.attestation
