@@ -44,6 +44,11 @@ export interface DstackTdxPolicy {
   expected_bootchain?: ExpectedBootchain
   /** Expected OS image hash (SHA256, hex-encoded) */
   os_image_hash?: string
+  /**
+   * Expected RTMR3 — the full runtime measurement register (96 lowercase hex
+   * chars). Pins the whole runtime event sequence; omit to skip the check.
+   */
+  expected_rtmr3?: string
   /** Expected app compose configuration */
   app_compose?: AppCompose
   /** Allowed TCB status values (default: ["UpToDate"]) */
@@ -60,6 +65,13 @@ export interface DstackTdxPolicy {
    * Set to true only for development/testing.
    */
   disable_runtime_verification?: boolean
+  /**
+   * Accept a self-signed server certificate, skipping CA chain, hostname/SAN,
+   * and expiry validation (for TEEs that serve self-signed certs). Defaults to
+   * false. Cannot be combined with disable_runtime_verification. Pair with
+   * expected_rtmr3 to bind the specific instance.
+   */
+  accept_self_signed_certs?: boolean
 }
 
 /**

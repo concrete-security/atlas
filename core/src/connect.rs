@@ -9,9 +9,84 @@ use crate::error::AtlsVerificationError;
 use crate::policy::Policy;
 use crate::verifier::{AsyncByteStream, Report};
 use crate::AtlsVerifier;
-use rustls::pki_types::ServerName;
-use rustls::{ClientConfig, RootCertStore};
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+use rustls::{
+    ClientConfig, DigitallySignedStruct, Error as RustlsError, RootCertStore, SignatureScheme,
+};
 use std::sync::Arc;
+
+/// Certificate verifier for aTLS connections to TEEs.
+///
+/// TEEs serve self-signed certificates, so CA-chain validation would always
+/// fail. Trust in aTLS does not come from the CA hierarchy but from attestation:
+/// the DCAP quote binds the TLS leaf certificate via the event log, and the EKM
+/// session binding prevents replay. This verifier therefore skips **CA chain
+/// validation, hostname/SAN matching, and certificate validity-period checks**,
+/// but still verifies the TLS handshake signature so the peer must prove it holds
+/// the private key for the presented certificate. Per-instance binding (that this
+/// is the *intended* TEE, not merely *a* TEE of the right image) comes from
+/// `expected_rtmr3` in the policy, not from this layer.
+#[derive(Debug)]
+struct AtlsServerCertVerifier {
+    supported_algs: rustls::crypto::WebPkiSupportedAlgorithms,
+}
+
+impl AtlsServerCertVerifier {
+    fn new() -> Self {
+        // Read the algorithms from the process-default CryptoProvider — the same
+        // provider `ClientConfig::builder()` uses — so the verifier never enforces
+        // a different (e.g. hardcoded) set than the connection negotiates. Fall
+        // back to the platform default only when no provider is installed (in which
+        // case `ClientConfig::builder()` would itself panic first).
+        #[cfg(not(target_arch = "wasm32"))]
+        let fallback = rustls::crypto::aws_lc_rs::default_provider();
+        #[cfg(target_arch = "wasm32")]
+        let fallback = rustls::crypto::ring::default_provider();
+        let supported_algs = rustls::crypto::CryptoProvider::get_default()
+            .map(|p| p.signature_verification_algorithms)
+            .unwrap_or(fallback.signature_verification_algorithms);
+        Self { supported_algs }
+    }
+}
+
+impl ServerCertVerifier for AtlsServerCertVerifier {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: UnixTime,
+    ) -> Result<ServerCertVerified, RustlsError> {
+        // Skip CA chain, hostname, and expiry — trust comes from attestation.
+        Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, RustlsError> {
+        // Still required — the peer must prove it holds the certificate's private key.
+        rustls::crypto::verify_tls12_signature(message, cert, dss, &self.supported_algs)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, RustlsError> {
+        // Still required — the peer must prove it holds the certificate's private key.
+        rustls::crypto::verify_tls13_signature(message, cert, dss, &self.supported_algs)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.supported_algs.supported_schemes()
+    }
+}
 
 // Platform-specific TLS types
 #[cfg(not(target_arch = "wasm32"))]
@@ -26,15 +101,18 @@ use futures_rustls::TlsConnector;
 
 /// Perform TLS handshake and return stream with peer certificate and session EKM.
 ///
-/// This establishes a TLS connection using CA-verified certificates from
-/// the webpki-roots bundle and captures the server's leaf certificate and
-/// TLS session Exported Keying Material (EKM) for session binding.
+/// Captures the server's leaf certificate and the TLS session Exported Keying
+/// Material (EKM) for attestation binding.
 ///
 /// # Arguments
 ///
 /// * `stream` - The underlying transport stream (e.g., TcpStream)
 /// * `server_name` - The server hostname for TLS SNI
 /// * `alpn` - Optional ALPN protocols (e.g., `["http/1.1", "h2"]`)
+/// * `accept_self_signed_certs` - When `true`, skip CA chain, hostname/SAN, and
+///   certificate-expiry validation (for TEE self-signed certs); the handshake
+///   signature is still verified. When `false`, standard webpki-roots CA and
+///   hostname validation applies.
 ///
 /// # Returns
 ///
@@ -43,18 +121,29 @@ pub async fn tls_handshake<S>(
     stream: S,
     server_name: &str,
     alpn: Option<Vec<String>>,
+    accept_self_signed_certs: bool,
 ) -> Result<(TlsStream<S>, Vec<u8>, Vec<u8>), AtlsVerificationError>
 where
     S: AsyncByteStream + 'static,
 {
-    debug!("Starting TLS handshake to {}", server_name);
+    debug!(
+        "Starting TLS handshake to {} (accept_self_signed_certs={})",
+        server_name, accept_self_signed_certs
+    );
 
-    let mut root_store = RootCertStore::empty();
-    root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let mut config = if accept_self_signed_certs {
+        ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(AtlsServerCertVerifier::new()))
+            .with_no_client_auth()
+    } else {
+        let mut root_store = RootCertStore::empty();
+        root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
 
-    let mut config = ClientConfig::builder()
-        .with_root_certificates(root_store)
-        .with_no_client_auth();
+        ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth()
+    };
 
     if let Some(protocols) = alpn {
         config.alpn_protocols = protocols.into_iter().map(|s| s.into_bytes()).collect();
@@ -97,7 +186,7 @@ where
 /// Establish a TLS connection with attestation verification.
 ///
 /// This function combines TLS handshake with attestation verification:
-/// 1. Performs a TLS handshake with CA certificate verification
+/// 1. Performs a TLS handshake (optionally accepting self-signed TEE certs)
 /// 2. Captures the server's leaf certificate
 /// 3. Creates the appropriate verifier from the policy
 /// 4. Performs attestation verification over the TLS stream
@@ -143,7 +232,9 @@ where
     // Initialize logging (idempotent, only runs once)
     crate::logging::init();
 
-    let (mut tls_stream, peer_cert, session_ekm) = tls_handshake(stream, server_name, alpn).await?;
+    let accept_self_signed = policy.accept_self_signed_certs();
+    let (mut tls_stream, peer_cert, session_ekm) =
+        tls_handshake(stream, server_name, alpn, accept_self_signed).await?;
 
     debug!("Starting attestation verification");
     let verifier = policy.into_verifier()?;

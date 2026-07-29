@@ -41,6 +41,14 @@ impl Default for Policy {
 }
 
 impl Policy {
+    /// Whether the policy accepts self-signed server certificates (skipping CA
+    /// chain, hostname, and expiry validation) during the TLS handshake.
+    pub fn accept_self_signed_certs(&self) -> bool {
+        match self {
+            Policy::DstackTdx(policy) => policy.accept_self_signed_certs,
+        }
+    }
+
     /// Convert this policy into its corresponding verifier.
     ///
     /// This delegates to the underlying policy variant's [`IntoVerifier`] implementation,

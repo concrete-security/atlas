@@ -627,7 +627,7 @@ mod integration {
             .await
             .expect("Failed to connect TCP");
 
-        let result = atlas_rs::connect::tls_handshake(tcp, TEST_HOST, None).await;
+        let result = atlas_rs::connect::tls_handshake(tcp, TEST_HOST, None, false).await;
 
         assert!(
             result.is_ok(),

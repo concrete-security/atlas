@@ -274,6 +274,44 @@ impl DstackTDXVerifier {
         Ok(())
     }
 
+    /// Verify RTMR3 against the pinned value using the trusted verified report.
+    ///
+    /// RTMR3 holds the accumulated runtime events, so pinning it constrains the
+    /// whole runtime event sequence rather than the individual events.
+    ///
+    /// No-op if `expected_rtmr3` is not configured.
+    fn verify_rtmr3(&self, verified_report: &VerifiedReport) -> Result<(), AtlsVerificationError> {
+        let Some(expected) = self.config.expected_rtmr3.as_ref() else {
+            debug!("No expected RTMR3 configured, skipping RTMR3 pinning");
+            return Ok(());
+        };
+        let expected = expected.to_lowercase();
+
+        // Get the trusted TD report from DCAP verification
+        let td_report = verified_report.report.as_td10().ok_or_else(|| {
+            AtlsVerificationError::TeeTypeMismatch(
+                "expected TDX report but got SGX enclave report".into(),
+            )
+        })?;
+
+        let actual = hex::encode(td_report.rt_mr3);
+        debug!("RTMR3 expected: {}", expected);
+        debug!("RTMR3 actual:   {}", actual);
+        let rtmr3_match = actual == expected;
+        debug!("RTMR3 match: {}", rtmr3_match);
+
+        if !rtmr3_match {
+            return Err(AtlsVerificationError::BootchainMismatch {
+                field: "rtmr3".into(),
+                expected,
+                actual,
+            });
+        }
+
+        debug!("RTMR3 verification successful");
+        Ok(())
+    }
+
     /// Verify certificate is in event log (using dstack-sdk EventLog type).
     ///
     /// Returns Ok(true) if cert matches, Ok(false) if cert not found,
@@ -576,10 +614,13 @@ impl AtlsVerifier for DstackTDXVerifier {
         // 7. Verify bootchain (MRTD, RTMR0-2) against verified report
         self.verify_bootchain(&verified_report)?;
 
-        // 8. Verify app compose hash against trusted event log
+        // 8. Verify pinned RTMR3 against verified report (if configured)
+        self.verify_rtmr3(&verified_report)?;
+
+        // 9. Verify app compose hash against trusted event log
         self.verify_app_compose(&events)?;
 
-        // 9. Verify OS image hash against trusted event log
+        // 10. Verify OS image hash against trusted event log
         self.verify_os_image_hash(&events)?;
 
         debug!("DStack TDX verification complete");
@@ -808,5 +849,113 @@ mod tests {
             "0e35f1b315ba6c912cf791e5c79dd9d3a2b8704516aa27d4e5aa78fb09ede04aef2bbd02ac7a8734c48562b9c26ba35d",
         )];
         assert!(verify_event_log_integrity(&events).is_ok());
+    }
+
+    /// Pinned RTMR3 used by the tests (48 bytes = 96 hex chars, SHA384-sized).
+    const TEST_RTMR3: &str = "1f2e3d4c5b6a79880716253443526170a1b2c3d4e5f60718293a4b5c6d7e8f900a1b2c3d4e5f60718293a4b5c6d7e8f9";
+    /// A different, equally well-formed RTMR3 the TD did not report.
+    const OTHER_RTMR3: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+
+    fn rtmr3_bytes(hex_str: &str) -> [u8; 48] {
+        hex::decode(hex_str)
+            .expect("test RTMR3 must be hex")
+            .try_into()
+            .expect("test RTMR3 must be 48 bytes")
+    }
+
+    /// Build a synthetic DCAP-verified report carrying the given RTMR3.
+    ///
+    /// `VerifiedReport` has no public constructor, so it is deserialized from
+    /// its own serde representation.
+    fn verified_report_with_rtmr3(rt_mr3: [u8; 48]) -> VerifiedReport {
+        use dcap_qvl::quote::TDReport10;
+        let td_report = TDReport10 {
+            tee_tcb_svn: [0u8; 16],
+            mr_seam: [0u8; 48],
+            mr_signer_seam: [0u8; 48],
+            seam_attributes: [0u8; 8],
+            td_attributes: [0u8; 8],
+            xfam: [0u8; 8],
+            mr_td: [0u8; 48],
+            mr_config_id: [0u8; 48],
+            mr_owner: [0u8; 48],
+            mr_owner_config: [0u8; 48],
+            rt_mr0: [0u8; 48],
+            rt_mr1: [0u8; 48],
+            rt_mr2: [0u8; 48],
+            rt_mr3,
+            report_data: [0u8; 64],
+        };
+        let tcb_status = serde_json::json!({ "status": "UpToDate", "advisory_ids": [] });
+        serde_json::from_value(serde_json::json!({
+            "status": "UpToDate",
+            "advisory_ids": [],
+            "report": { "TD10": td_report },
+            "ppid": "",
+            "qe_status": tcb_status,
+            "platform_status": tcb_status,
+        }))
+        .expect("synthetic VerifiedReport should deserialize")
+    }
+
+    /// Verifier exercising `verify_rtmr3` in isolation; the other runtime
+    /// checks are switched off so the config passes `new()` without them.
+    fn verifier_with_expected_rtmr3(expected: Option<&str>) -> DstackTDXVerifier {
+        DstackTDXVerifier::new(DstackTDXVerifierConfig {
+            expected_rtmr3: expected.map(str::to_string),
+            disable_runtime_verification: true,
+            ..Default::default()
+        })
+        .expect("verifier should build")
+    }
+
+    #[test]
+    fn test_verify_rtmr3_matching_pin_accepted() {
+        let verifier = verifier_with_expected_rtmr3(Some(TEST_RTMR3));
+        let report = verified_report_with_rtmr3(rtmr3_bytes(TEST_RTMR3));
+
+        assert!(verifier.verify_rtmr3(&report).is_ok());
+    }
+
+    #[test]
+    fn test_verify_rtmr3_uppercase_pin_accepted() {
+        // Expected values are normalized before comparison, so a pin supplied
+        // through the builder (which bypasses policy validation) still matches.
+        let verifier = verifier_with_expected_rtmr3(Some(&TEST_RTMR3.to_uppercase()));
+        let report = verified_report_with_rtmr3(rtmr3_bytes(TEST_RTMR3));
+
+        assert!(verifier.verify_rtmr3(&report).is_ok());
+    }
+
+    #[test]
+    fn test_verify_rtmr3_mismatch_rejected() {
+        let verifier = verifier_with_expected_rtmr3(Some(TEST_RTMR3));
+        let report = verified_report_with_rtmr3(rtmr3_bytes(OTHER_RTMR3));
+
+        let err = verifier
+            .verify_rtmr3(&report)
+            .expect_err("mismatched RTMR3 must fail the connection");
+
+        match err {
+            AtlsVerificationError::BootchainMismatch {
+                field,
+                expected,
+                actual,
+            } => {
+                assert_eq!(field, "rtmr3");
+                assert_eq!(expected, TEST_RTMR3);
+                assert_eq!(actual, OTHER_RTMR3);
+            }
+            other => panic!("expected BootchainMismatch, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_verify_rtmr3_absent_pin_skips_check() {
+        // Backward compatibility: policies without expected_rtmr3 accept any RTMR3.
+        let verifier = verifier_with_expected_rtmr3(None);
+        let report = verified_report_with_rtmr3(rtmr3_bytes(OTHER_RTMR3));
+
+        assert!(verifier.verify_rtmr3(&report).is_ok());
     }
 }

@@ -33,8 +33,10 @@ def dstack_tdx_policy(
     app_compose: Optional[dict] = None,
     expected_bootchain: Optional[dict] = None,
     os_image_hash: Optional[str] = None,
+    expected_rtmr3: Optional[str] = None,
     allowed_tcb_status: Optional[list[str]] = None,
     disable_runtime_verification: bool = False,
+    accept_self_signed_certs: bool = False,
     app_compose_docker_compose_file: Optional[str] = None,
     app_compose_allowed_envs: Optional[list[str]] = None,
     pccs_url: Optional[str] = None,
@@ -55,8 +57,14 @@ def dstack_tdx_policy(
             Must be used together with ``expected_bootchain``.
         allowed_tcb_status: List of acceptable TCB status values.
             Defaults to ``["UpToDate"]``.
+        expected_rtmr3: Expected RTMR3 (96 lowercase hex chars). Pins the full
+            runtime measurement register; omit to skip the check.
         disable_runtime_verification: Skip runtime checks (bootchain,
             app_compose, os_image_hash). NOT recommended for production.
+        accept_self_signed_certs: Accept a self-signed server certificate,
+            skipping CA chain, hostname, and expiry validation (for TEEs that
+            serve self-signed certs). Cannot be combined with
+            ``disable_runtime_verification``.
         app_compose_docker_compose_file: Override the ``docker_compose_file``
             key in app_compose.
         app_compose_allowed_envs: Override the ``allowed_envs`` key in
@@ -76,6 +84,12 @@ def dstack_tdx_policy(
             "expected_bootchain and os_image_hash must be provided together"
         )
 
+    if accept_self_signed_certs and disable_runtime_verification:
+        raise ValueError(
+            "accept_self_signed_certs cannot be combined with "
+            "disable_runtime_verification"
+        )
+
     if allowed_tcb_status is None:
         allowed_tcb_status = ["UpToDate"]
 
@@ -85,6 +99,9 @@ def dstack_tdx_policy(
         "cache_collateral": cache_collateral,
         "disable_runtime_verification": disable_runtime_verification,
     }
+
+    if accept_self_signed_certs:
+        policy["accept_self_signed_certs"] = True
 
     if pccs_url is not None:
         policy["pccs_url"] = pccs_url
@@ -107,6 +124,8 @@ def dstack_tdx_policy(
             policy["expected_bootchain"] = expected_bootchain
         if os_image_hash is not None:
             policy["os_image_hash"] = os_image_hash
+        if expected_rtmr3 is not None:
+            policy["expected_rtmr3"] = expected_rtmr3
 
     return policy
 
