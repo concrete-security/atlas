@@ -9,7 +9,7 @@ use dcap_qvl::verify::{verify, VerifiedReport};
 use dcap_qvl::QuoteCollateralV3;
 use dstack_sdk_types::dstack::{EventLog, GetQuoteResponse};
 use log::{debug, warn};
-use sha2::{Digest, Sha256, Sha512};
+use sha2::{Digest, Sha256, Sha384, Sha512};
 
 use crate::dstack::compose_hash::get_compose_hash;
 use crate::dstack::config::DstackTDXVerifierConfig;
@@ -531,6 +531,14 @@ impl AtlsVerifier for DstackTDXVerifier {
             .map_err(|e| AtlsVerificationError::Other(e.into()))?;
         debug!("Event log parsed, {} events found", events.len());
 
+        // 2b. Authenticate the RTMR3 event payloads against their logged digests.
+        // replay_rtmrs() (step 6) trusts each event's `digest` verbatim and never
+        // rebinds it to (event_type, event, event_payload); without this, an attacker
+        // can keep the genuine digests (so RTMR replay still matches the quote) while
+        // rewriting event_payload to forge the cert / compose-hash / os-image-hash that
+        // the checks below read. This binds payload -> digest; replay binds digest -> quote.
+        verify_event_log_integrity(&events)?;
+
         // 3. Verify certificate in event log
         debug!("Verifying certificate in event log");
         let cert_in_eventlog = self.verify_cert_in_eventlog(peer_cert, &events)?;
@@ -682,4 +690,123 @@ fn parse_content_length(headers: &[u8]) -> Option<usize> {
         }
     }
     None
+}
+
+/// Authenticate RTMR3 event payloads against their logged digests.
+///
+/// dstack extends RTMR3 with `digest = sha384(event_type.to_le_bytes() || b":" ||
+/// event || b":" || event_payload)`, but `replay_rtmrs()` replays the `digest` field
+/// verbatim and never rebinds it to the event contents. atlas reads `event_payload`
+/// (cert hash, compose-hash, os-image-hash) to make trust decisions, so a payload that
+/// is not tied back to its digest is attacker-controlled. Recomputing the digest closes
+/// the chain: payload -> digest here, digest -> quote via `verify_rtmr_replay`.
+///
+/// Only IMR 3 is checked, mirroring dstack `cc-eventlog` `TdxEventLog::validate`: IMR 0-2
+/// use the TCG multi-digest format (not this scheme) and are verified against the DCAP
+/// report by `verify_bootchain`, never via `event_payload`.
+fn verify_event_log_integrity(events: &[EventLog]) -> Result<(), AtlsVerificationError> {
+    for event in events {
+        if event.imr != 3 {
+            continue;
+        }
+        let payload = hex::decode(&event.event_payload).map_err(|e| {
+            AtlsVerificationError::EventLogParse(format!(
+                "failed to hex-decode event_payload for '{}': {}",
+                event.event, e
+            ))
+        })?;
+
+        let mut hasher = Sha384::new();
+        hasher.update(event.event_type.to_le_bytes());
+        hasher.update(b":");
+        hasher.update(event.event.as_bytes());
+        hasher.update(b":");
+        hasher.update(&payload);
+
+        if hex::encode(hasher.finalize()) != event.digest {
+            return Err(AtlsVerificationError::EventLogDigestMismatch {
+                event: event.event.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ev(imr: u32, event_type: u32, event: &str, event_payload: &str, digest: &str) -> EventLog {
+        EventLog {
+            imr,
+            event_type,
+            digest: digest.to_string(),
+            event: event.to_string(),
+            event_payload: event_payload.to_string(),
+        }
+    }
+
+    /// Real RTMR3 events from a dstack event log (sdk/simulator/eventlog.json), including
+    /// an empty-payload event. Proves our recomputation reproduces dstack's actual
+    /// `event_digest` output — a non-circular check of the derivation, not just self-consistency.
+    #[test]
+    fn test_event_log_integrity_genuine_dstack_digests_success() {
+        let events = vec![
+            ev(
+                3,
+                0x0800_0001,
+                "app-id",
+                "ea549f02e1a25fabd1cb788380e033ec5461b2ff",
+                "b01c7a2e6a406ae9cd5aa81451e4614e112b8f404df12e6ef506962c1a5279a94dc58da0923c4b7db89e26da9e538302",
+            ),
+            ev(
+                3,
+                0x0800_0001,
+                "compose-hash",
+                "ea549f02e1a25fabd1cb788380e033ec5461b2ffe4328d753642cf035452e48b",
+                "9c1fecc259af1e8494484a391bdef460cb74d677c76dd114b1e9e7fac343da4e773b2b0eb8df7a6fc0dd8ba5edbb30e1",
+            ),
+            ev(
+                3,
+                0x0800_0001,
+                "system-ready",
+                "",
+                "1a76b2a80a0be71eae59f80945d876351a7a3fb8e9fd1ff1cede5734aa84ea11fd72b4edfbb6f04e5a85edd114c751bd",
+            ),
+        ];
+        assert!(verify_event_log_integrity(&events).is_ok());
+    }
+
+    /// Finding A: keep the genuine digest (so RTMR replay still matches the quote) but
+    /// rewrite the payload. Must be rejected — otherwise cert/compose/os-image are forgeable
+    /// by anyone serving the event log.
+    #[test]
+    fn test_event_log_integrity_forged_payload_failure() {
+        let events = vec![ev(
+            3,
+            0x0800_0001,
+            "compose-hash",
+            // attacker-substituted payload, genuine compose-hash digest below
+            "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "9c1fecc259af1e8494484a391bdef460cb74d677c76dd114b1e9e7fac343da4e773b2b0eb8df7a6fc0dd8ba5edbb30e1",
+        )];
+        assert!(matches!(
+            verify_event_log_integrity(&events),
+            Err(AtlsVerificationError::EventLogDigestMismatch { .. })
+        ));
+    }
+
+    /// IMR 0-2 use the TCG multi-digest format, not `event_digest`; dstack `validate()`
+    /// skips them and so must we — their payloads are never trusted by atlas.
+    #[test]
+    fn test_event_log_integrity_ignores_non_rtmr3_success() {
+        let events = vec![ev(
+            0,
+            0x8000_000b,
+            "",
+            "095464785461626c6500",
+            "0e35f1b315ba6c912cf791e5c79dd9d3a2b8704516aa27d4e5aa78fb09ede04aef2bbd02ac7a8734c48562b9c26ba35d",
+        )];
+        assert!(verify_event_log_integrity(&events).is_ok());
+    }
 }
