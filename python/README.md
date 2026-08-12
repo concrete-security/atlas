@@ -69,7 +69,7 @@ from atlas.httpx import Client
 client = Client(atls_policy_per_hostname={"host.com": policy})
 ```
 
-### `atlas.policy.dstack_tdx_policy(**kwargs)`
+### `atlas.policy.dstack_tdx_policy(...)`
 
 Build a DStack TDX attestation policy dict
 
@@ -84,6 +84,12 @@ Build a DStack TDX attestation policy dict
 | `app_compose_allowed_envs` | `list[str] \| None` | Override `allowed_envs` in app_compose |
 | `pccs_url` | `str \| None` | Intel PCCS URL for collateral |
 | `cache_collateral` | `bool` | Cache Intel collateral between verifications |
+| `expected_rtmr3` | `str` | Keyword-only 96-character lowercase RTMR3 pin; required for self-signed mode |
+| `accept_self_signed_certs` | `bool` | Keyword-only self-signed TLS mode; requires `expected_rtmr3` and full runtime verification |
+
+The original nine parameters retain their positional order for compatibility.
+New security options are keyword-only so adding them cannot silently remap an
+existing caller's policy.
 
 ### `atlas.policy.dev_policy()`
 

@@ -32,6 +32,20 @@ pub struct DstackTdxPolicy {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub os_image_hash: Option<String>,
 
+    /// Expected RTMR3 - full runtime measurement register (96 lowercase hex
+    /// chars, i.e. a SHA384 digest).
+    ///
+    /// RTMR3 accumulates the application runtime events (compose hash, OS image
+    /// hash, TLS certificate, ...). Pinning it constrains the whole runtime
+    /// event sequence, not just the individual events checked by
+    /// `app_compose` / `os_image_hash`.
+    ///
+    /// When absent (the default), no RTMR3 check is performed, so existing
+    /// policies keep their current behavior. Like the other runtime checks, it
+    /// is skipped when `disable_runtime_verification` is true.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_rtmr3: Option<String>,
+
     /// Allowed TCB status values.
     #[serde(default = "default_allowed_tcb_status")]
     pub allowed_tcb_status: Vec<String>,
@@ -59,6 +73,23 @@ pub struct DstackTdxPolicy {
     /// Set to true only for development/testing.
     #[serde(default)]
     pub disable_runtime_verification: bool,
+
+    /// Accept the server's TLS certificate without CA-chain, hostname/SAN, or
+    /// expiry validation (for TEE self-signed certs).
+    ///
+    /// **Defaults to `false`** — standard webpki-roots CA + hostname validation
+    /// applies. Set to `true` only for TEEs that serve self-signed certificates,
+    /// where trust comes from attestation (the DCAP quote binds the leaf cert via
+    /// the event log, plus EKM session binding). The handshake signature is always
+    /// verified, so the peer must hold the certificate's private key regardless.
+    ///
+    /// Because this drops the hostname check, it removes the only per-connection
+    /// endpoint binding at the TLS layer; `expected_rtmr3` is required to bind the
+    /// specific instance. It is also rejected together with
+    /// `disable_runtime_verification` (that combination pins neither identity nor
+    /// measurements).
+    #[serde(default)]
+    pub accept_self_signed_certs: bool,
 }
 
 impl Default for DstackTdxPolicy {
@@ -67,18 +98,22 @@ impl Default for DstackTdxPolicy {
             expected_bootchain: None,
             app_compose: None,
             os_image_hash: None,
+            expected_rtmr3: None,
             allowed_tcb_status: default_allowed_tcb_status(),
             grace_period: None,
             pccs_url: default_pccs_url(),
             cache_collateral: false,
             disable_runtime_verification: false,
+            accept_self_signed_certs: false,
         }
     }
 }
 
 /// Check if a string is a valid lowercase hex string.
 fn is_valid_hex(s: &str) -> bool {
-    !s.is_empty() && s.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+    !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
 }
 
 impl DstackTdxPolicy {
@@ -105,6 +140,8 @@ impl DstackTdxPolicy {
     /// - `os_image_hash` is a valid hex string (if provided)
     /// - `expected_bootchain` fields are valid hex strings (if provided)
     /// - `grace_period` requires `allowed_tcb_status` to include `OutOfDate`
+    /// - `accept_self_signed_certs` is not combined with `disable_runtime_verification`
+    /// - `accept_self_signed_certs` is bound to a specific instance by `expected_rtmr3`
     pub fn validate(&self) -> Result<(), AtlsVerificationError> {
         // Validate TCB status values
         for status in &self.allowed_tcb_status {
@@ -116,14 +153,27 @@ impl DstackTdxPolicy {
             }
         }
 
+        // Skipping certificate validation AND runtime verification together leaves
+        // no CA trust, no hostname binding, and no measurement pinning — the peer is
+        // authenticated as nothing more than "some TDX machine". Reject the combination.
+        if self.accept_self_signed_certs && self.disable_runtime_verification {
+            return Err(AtlsVerificationError::Configuration(
+                "accept_self_signed_certs cannot be combined with disable_runtime_verification"
+                    .into(),
+            ));
+        }
+        if self.accept_self_signed_certs && self.expected_rtmr3.is_none() {
+            return Err(AtlsVerificationError::Configuration(
+                "accept_self_signed_certs requires expected_rtmr3".into(),
+            ));
+        }
+
         // Validate grace period policy requirements
-        if self.grace_period.is_some() {
-            if !self.allowed_tcb_status.iter().any(|s| s == "OutOfDate") {
-                return Err(AtlsVerificationError::Configuration(
-                    "grace_period requires allowed_tcb_status to include OutOfDate"
-                        .into(),
-                ));
-            }
+        if self.grace_period.is_some() && !self.allowed_tcb_status.iter().any(|s| s == "OutOfDate")
+        {
+            return Err(AtlsVerificationError::Configuration(
+                "grace_period requires allowed_tcb_status to include OutOfDate".into(),
+            ));
         }
 
         // Validate os_image_hash is hex
@@ -159,6 +209,15 @@ impl DstackTdxPolicy {
             }
         }
 
+        // Validate expected_rtmr3 is a full SHA384 measurement (48 bytes = 96 hex chars)
+        if let Some(ref rtmr3) = self.expected_rtmr3 {
+            if !is_valid_hex(rtmr3) || rtmr3.len() != 96 {
+                return Err(AtlsVerificationError::Configuration(
+                    "expected_rtmr3 must be a 96-character lowercase hex string".into(),
+                ));
+            }
+        }
+
         Ok(())
     }
 }
@@ -187,6 +246,9 @@ impl IntoVerifier for DstackTdxPolicy {
         if let Some(os_hash) = self.os_image_hash {
             builder = builder.os_image_hash(os_hash);
         }
+        if let Some(rtmr3) = self.expected_rtmr3 {
+            builder = builder.expected_rtmr3(rtmr3);
+        }
 
         builder = builder.allowed_tcb_status(self.allowed_tcb_status);
         if let Some(grace) = self.grace_period {
@@ -207,19 +269,133 @@ impl IntoVerifier for DstackTdxPolicy {
 mod tests {
     use super::*;
 
+    /// A well-formed RTMR3 pin (48 bytes = 96 hex chars).
+    const TEST_RTMR3: &str = "1f2e3d4c5b6a79880716253443526170a1b2c3d4e5f60718293a4b5c6d7e8f900a1b2c3d4e5f60718293a4b5c6d7e8f9";
+
     #[test]
     fn test_dstack_tdx_policy_default() {
         let policy = DstackTdxPolicy::default();
         assert_eq!(policy.allowed_tcb_status, vec!["UpToDate"]);
         assert!(policy.expected_bootchain.is_none());
+        assert!(policy.expected_rtmr3.is_none());
         assert!(!policy.disable_runtime_verification);
+        // Safe default: CA + hostname validation applies unless explicitly opted out.
+        assert!(!policy.accept_self_signed_certs);
     }
 
     #[test]
     fn test_dstack_tdx_policy_dev() {
         let policy = DstackTdxPolicy::dev();
-        assert!(policy.allowed_tcb_status.contains(&"SWHardeningNeeded".to_string()));
+        assert!(policy
+            .allowed_tcb_status
+            .contains(&"SWHardeningNeeded".to_string()));
         assert!(policy.disable_runtime_verification);
+        // dev() must not also skip cert validation — that combination is rejected.
+        assert!(!policy.accept_self_signed_certs);
+        assert!(policy.validate().is_ok());
+    }
+
+    #[test]
+    fn test_self_signed_with_disable_runtime_rejected() {
+        // Skipping cert validation AND runtime verification pins nothing — rejected.
+        let policy = DstackTdxPolicy {
+            accept_self_signed_certs: true,
+            disable_runtime_verification: true,
+            expected_rtmr3: Some(TEST_RTMR3.into()),
+            ..Default::default()
+        };
+        let err = policy
+            .validate()
+            .expect_err("self-signed + disable_runtime must be rejected")
+            .to_string();
+        assert!(
+            err.contains(
+                "accept_self_signed_certs cannot be combined with disable_runtime_verification"
+            ),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_self_signed_without_rtmr3_rejected() {
+        let policy = DstackTdxPolicy {
+            accept_self_signed_certs: true,
+            ..Default::default()
+        };
+
+        let err = policy
+            .validate()
+            .expect_err("self-signed certificate acceptance must require an RTMR3 pin")
+            .to_string();
+
+        assert!(
+            err.contains("accept_self_signed_certs requires expected_rtmr3"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_self_signed_with_rtmr3_accepted() {
+        let policy = DstackTdxPolicy {
+            expected_rtmr3: Some(TEST_RTMR3.into()),
+            accept_self_signed_certs: true,
+            ..Default::default()
+        };
+
+        assert!(policy.validate().is_ok());
+    }
+
+    #[test]
+    fn test_valid_rtmr3_accepted() {
+        let policy = DstackTdxPolicy {
+            expected_rtmr3: Some(TEST_RTMR3.into()),
+            disable_runtime_verification: true,
+            ..Default::default()
+        };
+        assert!(policy.validate().is_ok());
+    }
+
+    #[test]
+    fn test_invalid_rtmr3_rejected() {
+        // A malformed pin must be caught at load time, not silently at compare time.
+        for bad in [
+            "not-valid-hex!",
+            &TEST_RTMR3.to_uppercase(),
+            &TEST_RTMR3[..94], // 94 hex chars: valid hex, wrong length
+            "",
+        ] {
+            let policy = DstackTdxPolicy {
+                expected_rtmr3: Some(bad.into()),
+                disable_runtime_verification: true,
+                ..Default::default()
+            };
+            let err = policy
+                .validate()
+                .expect_err("malformed expected_rtmr3 must be rejected")
+                .to_string();
+            assert!(
+                err.contains("expected_rtmr3 must be a 96-character lowercase hex string"),
+                "unexpected error for {:?}: {}",
+                bad,
+                err
+            );
+        }
+    }
+
+    #[test]
+    fn test_rtmr3_json_optional() {
+        // Policies written before RTMR3 pinning existed must keep parsing, and
+        // must not gain the key when serialized back out.
+        let without: DstackTdxPolicy =
+            serde_json::from_str(r#"{"allowed_tcb_status": ["UpToDate"]}"#).unwrap();
+        assert!(without.expected_rtmr3.is_none());
+        assert!(!serde_json::to_string(&without)
+            .unwrap()
+            .contains("expected_rtmr3"));
+
+        let with: DstackTdxPolicy =
+            serde_json::from_str(&format!(r#"{{"expected_rtmr3": "{}"}}"#, TEST_RTMR3)).unwrap();
+        assert_eq!(with.expected_rtmr3.as_deref(), Some(TEST_RTMR3));
     }
 
     #[test]

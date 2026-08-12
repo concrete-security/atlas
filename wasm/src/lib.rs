@@ -11,13 +11,15 @@
 mod hyper_io;
 
 use async_io_stream::IoStream;
+use atlas_rs::{
+    atls_connect, dstack::merge_with_default_app_compose, AsyncWriteExt, Policy, TlsStream,
+};
 use bytes::Bytes;
 use futures::io::{ReadHalf, WriteHalf};
 use futures::AsyncReadExt;
 use http_body_util::{BodyExt, Full};
 use hyper::client::conn::http1;
 use hyper::Request;
-use atlas_rs::{dstack::merge_with_default_app_compose, atls_connect, AsyncWriteExt, Policy, TlsStream};
 use serde::Serialize;
 use std::{cell::RefCell, rc::Rc};
 use wasm_bindgen::prelude::*;
@@ -56,28 +58,30 @@ fn create_readable_stream(reader: ReadHalf<TlsStream<WsIo>>) -> web_sys::Readabl
     let underlying_source = Object::new();
 
     let reader_clone = reader.clone();
-    let pull = Closure::wrap(Box::new(move |controller: ReadableStreamDefaultController| {
-        let reader = reader_clone.clone();
-        let promise = wasm_bindgen_futures::future_to_promise(async move {
-            let mut buf = vec![0u8; 16 * 1024];
-            let mut reader_ref = reader.borrow_mut();
-            match reader_ref.read(&mut buf).await {
-                Ok(0) => {
-                    controller.close().ok();
+    let pull = Closure::wrap(
+        Box::new(move |controller: ReadableStreamDefaultController| {
+            let reader = reader_clone.clone();
+            let promise = wasm_bindgen_futures::future_to_promise(async move {
+                let mut buf = vec![0u8; 16 * 1024];
+                let mut reader_ref = reader.borrow_mut();
+                match reader_ref.read(&mut buf).await {
+                    Ok(0) => {
+                        controller.close().ok();
+                    }
+                    Ok(n) => {
+                        let chunk = Uint8Array::from(&buf[..n]);
+                        controller.enqueue_with_chunk(&chunk.into()).ok();
+                    }
+                    Err(e) => {
+                        let error = JsValue::from_str(&e.to_string());
+                        controller.error_with_e(&error);
+                    }
                 }
-                Ok(n) => {
-                    let chunk = Uint8Array::from(&buf[..n]);
-                    controller.enqueue_with_chunk(&chunk.into()).ok();
-                }
-                Err(e) => {
-                    let error = JsValue::from_str(&e.to_string());
-                    controller.error_with_e(&error);
-                }
-            }
-            Ok(JsValue::UNDEFINED)
-        });
-        promise
-    }) as Box<dyn FnMut(ReadableStreamDefaultController) -> Promise>);
+                Ok(JsValue::UNDEFINED)
+            });
+            promise
+        }) as Box<dyn FnMut(ReadableStreamDefaultController) -> Promise>,
+    );
 
     Reflect::set(&underlying_source, &"pull".into(), pull.as_ref()).unwrap();
     pull.forget();
@@ -419,7 +423,11 @@ impl AtlsHttp {
         let headers_obj = Object::new();
         for (name, value) in response.headers() {
             let value_str = value.to_str().unwrap_or("");
-            Reflect::set(&headers_obj, &name.as_str().into(), &JsValue::from_str(value_str))?;
+            Reflect::set(
+                &headers_obj,
+                &name.as_str().into(),
+                &JsValue::from_str(value_str),
+            )?;
         }
 
         // Create ReadableStream from hyper body
@@ -450,38 +458,40 @@ fn create_hyper_body_stream(body: hyper::body::Incoming) -> web_sys::ReadableStr
     let body = Rc::new(RefCell::new(Some(body)));
     let underlying_source = Object::new();
 
-    let pull = Closure::wrap(Box::new(move |controller: ReadableStreamDefaultController| {
-        let body = body.clone();
+    let pull = Closure::wrap(
+        Box::new(move |controller: ReadableStreamDefaultController| {
+            let body = body.clone();
 
-        wasm_bindgen_futures::future_to_promise(async move {
-            let mut body_opt = body.borrow_mut();
+            wasm_bindgen_futures::future_to_promise(async move {
+                let mut body_opt = body.borrow_mut();
 
-            if let Some(body_inner) = body_opt.as_mut() {
-                // Try to get the next frame from the body
-                match body_inner.frame().await {
-                    Some(Ok(frame)) => {
-                        if let Some(data) = frame.data_ref() {
-                            let arr = Uint8Array::from(data.as_ref());
-                            controller.enqueue_with_chunk(&arr.into()).ok();
+                if let Some(body_inner) = body_opt.as_mut() {
+                    // Try to get the next frame from the body
+                    match body_inner.frame().await {
+                        Some(Ok(frame)) => {
+                            if let Some(data) = frame.data_ref() {
+                                let arr = Uint8Array::from(data.as_ref());
+                                controller.enqueue_with_chunk(&arr.into()).ok();
+                            }
+                            // If it's a trailers frame, we ignore it
                         }
-                        // If it's a trailers frame, we ignore it
+                        Some(Err(e)) => {
+                            let error = JsValue::from_str(&format!("Body read error: {e}"));
+                            controller.error_with_e(&error);
+                        }
+                        None => {
+                            // Body complete
+                            controller.close().ok();
+                        }
                     }
-                    Some(Err(e)) => {
-                        let error = JsValue::from_str(&format!("Body read error: {e}"));
-                        controller.error_with_e(&error);
-                    }
-                    None => {
-                        // Body complete
-                        controller.close().ok();
-                    }
+                } else {
+                    controller.close().ok();
                 }
-            } else {
-                controller.close().ok();
-            }
 
-            Ok(JsValue::UNDEFINED)
-        })
-    }) as Box<dyn FnMut(ReadableStreamDefaultController) -> Promise>);
+                Ok(JsValue::UNDEFINED)
+            })
+        }) as Box<dyn FnMut(ReadableStreamDefaultController) -> Promise>,
+    );
 
     Reflect::set(&underlying_source, &"pull".into(), pull.as_ref()).unwrap();
     pull.forget();

@@ -183,14 +183,22 @@ Policy fields vary by verifier implementation. The `Policy` enum wraps implement
 | `expected_bootchain` | MRTD and RTMR0-2 measurements | Yes (unless disabled) |
 | `os_image_hash` | SHA256 of Dstack image's sha256sum.txt | Yes (unless disabled) |
 | `app_compose` | Expected application configuration | Yes (unless disabled) |
+| `expected_rtmr3` | Full RTMR3 runtime measurement, as 96 lowercase hex chars. Required with `accept_self_signed_certs`; optional otherwise. | No |
 | `allowed_tcb_status` | Acceptable TCB statuses (e.g., `["UpToDate"]`) | Yes |
 | `grace_period` | Grace period (seconds) for `OutOfDate` TCB status. `0` means no grace window. | No |
 | `disable_runtime_verification` | Skip runtime checks (default: false) | No |
+| `accept_self_signed_certs` | Skip CA-chain, hostname/SAN, and expiry validation for TEE self-signed certificates. Requires `expected_rtmr3` and cannot be combined with `disable_runtime_verification`. | No |
 | `pccs_url` | Intel PCCS URL (defaults to Phala's) | No |
 | `cache_collateral` | Cache Intel collateral (default: false) | No |
 
 Time-based TCB checks:
 - `grace_period` applies only when the TCB status is `OutOfDate` and requires `OutOfDate` in `allowed_tcb_status`. A value of `0` means no grace window.
+
+Self-signed certificate mode is fail closed. Enabling `accept_self_signed_certs`
+without `expected_rtmr3`, or together with `disable_runtime_verification`, is a
+configuration error. Removing hostname validation otherwise allows a different
+genuine TEE running the same approved workload to impersonate the intended
+endpoint.
 
 ```rust
 use atlas_rs::{Policy, DstackTdxPolicy, ExpectedBootchain};
@@ -213,10 +221,14 @@ let prod_policy = Policy::DstackTdx(DstackTdxPolicy {
         "runner": "docker-compose",
         "docker_compose_file": "..."
     })),
+    expected_rtmr3: Some("1f2e3d4c...".into()),
     allowed_tcb_status: vec!["UpToDate".into()],
     grace_period: Some(30 * 24 * 60 * 60),
     ..Default::default()
 });
+
+// For TEE self-signed certificates, use the same production measurements and
+// also set accept_self_signed_certs: true. That mode requires expected_rtmr3.
 
 // This will FAIL - missing runtime fields without disable_runtime_verification
 let invalid_policy = Policy::DstackTdx(DstackTdxPolicy::default());
@@ -279,7 +291,11 @@ Since the EKM is derived from the TLS session's master secret (unique per sessio
 
 ### Step 1: TLS Handshake
 
-TLS 1.3 handshake with a promiscuous verifier. The certificate is accepted temporarily and recorded for later verification.
+By default, the TLS 1.3 handshake uses standard webpki-roots CA validation and
+hostname/SAN checks. TEE self-signed certificates require an explicit
+`accept_self_signed_certs` policy and a mandatory `expected_rtmr3` pin, which
+replaces hostname identity with a measured per-instance identity. In both modes,
+Atlas records the negotiated leaf certificate for attestation verification.
 
 ### Step 2: EKM Extraction & Quote Retrieval
 
@@ -327,9 +343,9 @@ Server responds:
 
 1. Validate the quote signature using Intel PCCS collateral (DCAP verification flow)
 2. Ensure `report_data` in the quote equals `SHA512(nonce || session_ekm)` (session binding + freshness)
-3. Recompute RTMR3 by replaying every event log entry in order and ensure the final digest matches the quote
-4. During that replay, locate the TLS key binding event (contains the certificate pubkey hash) to prove the attested workload owns the negotiated TLS key
-5. Verify bootchain (MRTD, RTMR0-2), app compose hash, and OS image hash against policy
+3. Reject unsupported IMR indexes, recompute each RTMR3 runtime event digest from its type/name/payload, then replay the authenticated digests in order and ensure the final RTMR3 matches the quote
+4. Locate the RTMR3 dstack runtime TLS key binding event (contains the certificate pubkey hash) to prove the attested workload owns the negotiated TLS key
+5. Verify bootchain (MRTD, RTMR0-2), app compose hash, OS image hash, and optional `expected_rtmr3` against policy. App compose, OS image, and TLS certificate decisions consume only authenticated RTMR3 dstack runtime events.
 
 ## TCB Status Values
 

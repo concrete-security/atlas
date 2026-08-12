@@ -75,6 +75,10 @@ const response = await fetch("/v1/chat/completions", {
 
 console.log(response.status);
 console.log(response.attestation); // { trusted: true, teeType: "Tdx", ... }
+
+// Release this fetch instance's pooled connection when it is no longer needed.
+// A later request through the same function reconnects and re-attests.
+fetch.close();
 ```
 
 ### Low-level: `AtlsHttp`

@@ -48,6 +48,9 @@ jobs:
         run: cargo check -p atlas-wasm --target wasm32-unknown-unknown
       - name: Run WASM tests (Node.js)
         run: wasm-pack test --node wasm
+      - name: Run WASM wrapper tests
+        working-directory: wasm
+        run: npm test
 
   test-node:
     runs-on: ubuntu-latest

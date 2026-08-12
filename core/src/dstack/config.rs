@@ -41,6 +41,13 @@ pub struct DstackTDXVerifierConfig {
     /// The SHA256 hash of the OS image that should be running in the TD.
     pub os_image_hash: Option<String>,
 
+    /// Expected RTMR3 (96 lowercase hex chars).
+    ///
+    /// If provided, the verifier will check that the attestation's RTMR3 -
+    /// the full runtime measurement register - matches this expected value.
+    /// If None, RTMR3 is not pinned.
+    pub expected_rtmr3: Option<String>,
+
     /// PCCS URL for collateral fetching.
     ///
     /// If None, uses Intel's default PCS endpoint.
@@ -62,6 +69,7 @@ impl Default for DstackTDXVerifierConfig {
             disable_runtime_verification: false,
             expected_bootchain: None,
             os_image_hash: None,
+            expected_rtmr3: None,
             pccs_url: None,
             cache_collateral: true,
         }
@@ -127,6 +135,12 @@ impl DstackTDXVerifierBuilder {
     /// Set the expected OS image hash.
     pub fn os_image_hash(mut self, hash: impl Into<String>) -> Self {
         self.config.os_image_hash = Some(hash.into());
+        self
+    }
+
+    /// Set the expected RTMR3 (96 lowercase hex chars).
+    pub fn expected_rtmr3(mut self, rtmr3: impl Into<String>) -> Self {
+        self.config.expected_rtmr3 = Some(rtmr3.into());
         self
     }
 

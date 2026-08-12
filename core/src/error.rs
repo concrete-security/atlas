@@ -37,6 +37,11 @@ pub enum AtlsVerificationError {
     #[error("failed to parse event log: {0}")]
     EventLogParse(String),
 
+    /// An RTMR3 event's logged digest does not match the digest recomputed from
+    /// its contents, so its `event_payload` is not authenticated by the quote.
+    #[error("event log digest mismatch for event '{event}'")]
+    EventLogDigestMismatch { event: String },
+
     /// TEE type mismatch.
     #[error("TEE type mismatch: {0}")]
     TeeTypeMismatch(String),
@@ -54,7 +59,10 @@ pub enum AtlsVerificationError {
 
     /// TCB status not in allowed list.
     #[error("TCB status {status} not allowed (allowed: {allowed:?})")]
-    TcbStatusNotAllowed { status: String, allowed: Vec<String> },
+    TcbStatusNotAllowed {
+        status: String,
+        allowed: Vec<String>,
+    },
 
     /// TCB info could not be determined or parsed.
     #[error("TCB info error: {0}")]
@@ -69,7 +77,9 @@ pub enum AtlsVerificationError {
     },
 
     /// Report data mismatch - potential replay attack.
-    #[error("report data mismatch: expected {expected}, got {actual}. Possible replay/relay attack.")]
+    #[error(
+        "report data mismatch: expected {expected}, got {actual}. Possible replay/relay attack."
+    )]
     ReportDataMismatch { expected: String, actual: String },
 
     /// Configuration error.

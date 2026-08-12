@@ -39,6 +39,9 @@ def dstack_tdx_policy(
     app_compose_allowed_envs: Optional[list[str]] = None,
     pccs_url: Optional[str] = None,
     cache_collateral: bool = False,
+    *,
+    expected_rtmr3: Optional[str] = None,
+    accept_self_signed_certs: bool = False,
 ) -> dict:
     """Build a DstackTdx attestation policy dict.
 
@@ -63,6 +66,12 @@ def dstack_tdx_policy(
             app_compose.
         pccs_url: PCCS URL for Intel collateral fetching.
         cache_collateral: Cache Intel collateral between verifications.
+        expected_rtmr3: Keyword-only expected RTMR3 (96 lowercase hex chars).
+            Pins the full runtime measurement register; omit to skip the check.
+        accept_self_signed_certs: Keyword-only self-signed certificate mode.
+            Skips CA chain, hostname, and expiry validation, requires
+            ``expected_rtmr3``, and cannot be combined with
+            ``disable_runtime_verification``.
 
     Returns:
         Policy dict like ``{"type": "dstack_tdx", ...}``.
@@ -76,6 +85,14 @@ def dstack_tdx_policy(
             "expected_bootchain and os_image_hash must be provided together"
         )
 
+    if accept_self_signed_certs and disable_runtime_verification:
+        raise ValueError(
+            "accept_self_signed_certs cannot be combined with "
+            "disable_runtime_verification"
+        )
+    if accept_self_signed_certs and expected_rtmr3 is None:
+        raise ValueError("accept_self_signed_certs requires expected_rtmr3")
+
     if allowed_tcb_status is None:
         allowed_tcb_status = ["UpToDate"]
 
@@ -85,6 +102,9 @@ def dstack_tdx_policy(
         "cache_collateral": cache_collateral,
         "disable_runtime_verification": disable_runtime_verification,
     }
+
+    if accept_self_signed_certs:
+        policy["accept_self_signed_certs"] = True
 
     if pccs_url is not None:
         policy["pccs_url"] = pccs_url
@@ -107,6 +127,8 @@ def dstack_tdx_policy(
             policy["expected_bootchain"] = expected_bootchain
         if os_image_hash is not None:
             policy["os_image_hash"] = os_image_hash
+        if expected_rtmr3 is not None:
+            policy["expected_rtmr3"] = expected_rtmr3
 
     return policy
 

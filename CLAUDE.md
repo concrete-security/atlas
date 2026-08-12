@@ -32,7 +32,7 @@ cd python && make qa-all
 
 # Full verification (closest CI parity)
 make test-all
-make test-wasm-node
+make test-wasm-node # Rust/WASM and JS wrapper tests in Node.js
 
 # Build outputs
 make build

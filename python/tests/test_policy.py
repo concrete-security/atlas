@@ -60,6 +60,31 @@ class TestDstackTdxPolicy:
         )
         assert policy["pccs_url"] == "https://custom-pccs.example.com"
 
+    def test_dstack_tdx_policy_legacy_positional_compatibility(
+        self, bootchain, os_image_hash
+    ):
+        """The established nine positional arguments retain their original mapping."""
+        policy = dstack_tdx_policy(
+            {"docker_compose_file": "base", "allowed_envs": []},
+            bootchain,
+            os_image_hash,
+            ["UpToDate", "OutOfDate"],
+            False,
+            "legacy-compose",
+            ["LEGACY_SECRET"],
+            "https://legacy-pccs.example.com",
+            True,
+        )
+
+        assert policy["allowed_tcb_status"] == ["UpToDate", "OutOfDate"]
+        assert policy["disable_runtime_verification"] is False
+        assert policy["app_compose"]["docker_compose_file"] == "legacy-compose"
+        assert policy["app_compose"]["allowed_envs"] == ["LEGACY_SECRET"]
+        assert policy["pccs_url"] == "https://legacy-pccs.example.com"
+        assert policy["cache_collateral"] is True
+        assert "expected_rtmr3" not in policy
+        assert "accept_self_signed_certs" not in policy
+
     def test_bootchain_without_os_image_hash_raises(self, bootchain):
         """Test that providing bootchain without os_image_hash raises ValueError."""
         with pytest.raises(ValueError, match="must be provided together"):
@@ -69,6 +94,22 @@ class TestDstackTdxPolicy:
         """Test that providing os_image_hash without bootchain raises ValueError."""
         with pytest.raises(ValueError, match="must be provided together"):
             dstack_tdx_policy(os_image_hash=os_image_hash)
+
+    def test_self_signed_without_rtmr3_raises(self):
+        """Self-signed mode must be pinned to one measured RTMR3 instance."""
+        with pytest.raises(ValueError, match="requires expected_rtmr3"):
+            dstack_tdx_policy(accept_self_signed_certs=True)
+
+    def test_self_signed_with_rtmr3_is_included(self):
+        """Self-signed mode is emitted only with the required RTMR3 pin."""
+        expected_rtmr3 = "11" * 48
+        policy = dstack_tdx_policy(
+            expected_rtmr3=expected_rtmr3,
+            accept_self_signed_certs=True,
+        )
+
+        assert policy["accept_self_signed_certs"] is True
+        assert policy["expected_rtmr3"] == expected_rtmr3
 
     def test_dstack_tdx_policy_app_compose_overrides(self):
         """Test that app_compose overrides work correctly."""
