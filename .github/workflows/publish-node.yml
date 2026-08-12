@@ -25,6 +25,9 @@ env:
   MACOSX_DEPLOYMENT_TARGET: '10.13'
   CARGO_INCREMENTAL: 0
 
+permissions:
+  contents: read
+
 jobs:
   build:
     strategy:

@@ -518,8 +518,7 @@ impl AtlsVerifier for DstackTDXVerifier {
         debug!("Starting DStack TDX verification for {}", hostname);
 
         // 1. Generate nonce and get quote via HTTP POST to /tdx_quote
-        let mut nonce = [0u8; 32];
-        rand::Rng::fill(&mut rand::thread_rng(), &mut nonce);
+        let nonce: [u8; 32] = rand::random();
 
         // Get quote via HTTP POST to /tdx_quote
         let quote_response = get_quote_over_http(stream, &nonce, hostname).await?;

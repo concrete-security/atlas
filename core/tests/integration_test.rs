@@ -266,8 +266,7 @@ mod integration {
     #[tokio::test]
     #[ignore = "live enclave vllm.concrete-security.com decommissioned; needs offline fixtures or a new endpoint"]
     async fn test_grace_period_outofdate_paths() {
-        let mut nonce = [0u8; 32];
-        rand::Rng::fill(&mut rand::thread_rng(), &mut nonce);
+        let nonce: [u8; 32] = rand::random();
 
         let quote_response = get_quote_over_http(&nonce, TEST_HOST)
             .await
