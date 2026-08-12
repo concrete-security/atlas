@@ -24,9 +24,10 @@ aTLS (attested TLS) enables clients to verify that a TLS server is running insid
 │                       High-Level API                            │
 │    atls_connect(stream, server_name, policy, alpn)            │
 │                                                                 │
-│    1. TLS handshake with CA verification                       │
-│    2. Capture peer certificate                                  │
-│    3. Convert policy to verifier                                │
+│    1. Convert policy to verifier                                │
+│    2. TLS handshake with CA verification, or explicit           │
+│       self-signed mode requiring RTMR3 instance pinning          │
+│    3. Capture peer certificate and session EKM                  │
 │    4. Run attestation verification                              │
 │    5. Return (TlsStream, Report)                                │
 └─────────────────────────────────────────────────────────────────┘
@@ -46,7 +47,7 @@ aTLS (attested TLS) enables clients to verify that a TLS server is running insid
 ┌─────────────────────────────────────────────────────────────────┐
 │                         Verifier                                │
 │  ┌─────────────────────┐                                       │
-│  │ DstackTDXVerifier   │─────▶ verify(stream, cert, hostname)  │
+│  │ DstackTDXVerifier   │────▶ verify(stream, cert, ekm, host)  │
 │  │ (+ future verifiers)│                                       │
 │  └─────────────────────┘                                       │
 │                                                                 │
@@ -78,6 +79,7 @@ pub trait AtlsVerifier: Send + Sync {
         &self,
         stream: &mut S,       // TLS stream for quote fetching
         peer_cert: &[u8],     // Server's TLS certificate (DER)
+        session_ekm: &[u8],   // TLS exporter binding this session
         hostname: &str,       // Server hostname
     ) -> impl Future<Output = Result<Report, AtlsVerificationError>> + Send
     where
@@ -136,14 +138,18 @@ pub enum Report {
 
 When `atls_connect()` is called:
 
-1. **TLS Handshake** - Establish TLS connection using webpki-roots CA bundle
-2. **Certificate Capture** - Extract server's leaf certificate (DER-encoded)
-3. **Policy → Verifier** - Call `policy.into_verifier()` to create the verifier
-4. **Attestation** - Call `verifier.verify(stream, cert, hostname)`:
+1. **Policy → Verifier** - Call `policy.into_verifier()` before the handshake so
+   invalid policy cannot enable a weaker TLS verifier
+2. **TLS Handshake** - Establish TLS connection using webpki-roots CA bundle by
+   default, or explicit self-signed mode when the policy includes an
+   `expected_rtmr3` instance pin
+3. **Certificate and EKM Capture** - Extract server's leaf certificate
+   (DER-encoded) and session Exported Keying Material
+4. **Attestation** - Call `verifier.verify(stream, cert, session_ekm, hostname)`:
    - Fetch attestation quote from server (e.g., HTTP POST to `/tdx_quote`)
    - Verify quote cryptographically (e.g., Intel DCAP verification)
-   - Verify certificate binding (cert hash in event log)
-   - Verify measurements (bootchain, app config, OS image)
+   - Verify certificate binding from authenticated RTMR3 dstack runtime events
+   - Verify RTMR replay, bootchain, app config, OS image, and optional RTMR3 pin
 5. **Return** - Return `(TlsStream, Report)` for continued communication
 
 ## Module Structure

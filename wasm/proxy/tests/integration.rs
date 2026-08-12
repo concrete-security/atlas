@@ -14,10 +14,7 @@ async fn get_available_port() -> u16 {
 
 /// Spawn the proxy server with given configuration.
 /// Returns the proxy listen address and a shutdown sender.
-async fn spawn_proxy(
-    target: &str,
-    allowlist: &str,
-) -> (String, tokio::task::JoinHandle<()>) {
+async fn spawn_proxy(target: &str, allowlist: &str) -> (String, tokio::task::JoinHandle<()>) {
     let proxy_port = get_available_port().await;
     let listen_addr = format!("127.0.0.1:{}", proxy_port);
     let listen_addr_clone = listen_addr.clone();
@@ -228,7 +225,8 @@ async fn test_websocket_target_from_query_param() {
 
     // Connect with target pointing to echo_addr2 via query param
     // URL encode the target to handle the colon properly
-    let encoded_target: String = url::form_urlencoded::byte_serialize(echo_addr2.as_bytes()).collect();
+    let encoded_target: String =
+        url::form_urlencoded::byte_serialize(echo_addr2.as_bytes()).collect();
     let url_with_target = format!("{}/tunnel?target={}", proxy_url, encoded_target);
     let (mut ws_stream, _) = connect_async(&url_with_target)
         .await

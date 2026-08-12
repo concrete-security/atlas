@@ -7,6 +7,7 @@ export interface AttestationResult {
 export interface AtlsFetchOptions {
   proxyUrl: string;
   targetHost: string;
+  policy: Record<string, unknown>;
   serverName?: string;
   defaultHeaders?: Record<string, string>;
   onAttestation?: (attestation: AttestationResult) => void;
@@ -21,4 +22,3 @@ export type AtlsFetch = (input: RequestInfo | URL, init?: RequestInit) => Promis
 export function createAtlsFetch(options: AtlsFetchOptions): AtlsFetch;
 
 export { AttestedStream } from "./atls_wasm.js";
-

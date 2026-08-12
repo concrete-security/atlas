@@ -66,11 +66,14 @@ async function ensureWasm() {
 // ============================================================================
 
 /**
- * Connection cache keyed by (wsUrl, serverName).
- * Each entry holds an AtlsHttp instance that can be reused.
+ * Connection cache keyed by (fetch instance, wsUrl, serverName).
+ * Each entry holds an AtlsHttp instance that can be reused. The fetch instance
+ * namespace prevents a connection attested under one policy from being reused by
+ * a different policy.
  * @type {Map<string, AtlsHttp>}
  */
 const connectionCache = new Map();
+let nextConnectionPoolId = 0;
 
 /**
  * Close all cached connections.
@@ -143,8 +146,9 @@ function buildProxyUrl(base, target) {
  * Create a fetch-compatible function for attested TLS connections.
  *
  * Connections are automatically pooled and reused for subsequent requests
- * to the same target. The `onAttestation` callback is called only once
- * when a new connection is established (not on reused connections).
+ * through the returned fetch function to the same target. The `onAttestation`
+ * callback is called only once when a new connection is established (not on
+ * reused connections).
  *
  * @param {Object} options
  * @param {string} options.proxyUrl - WebSocket proxy URL (e.g., "ws://127.0.0.1:9000")
@@ -173,9 +177,10 @@ export function createAtlsFetch(options) {
     : normalizedTarget;
   const wsUrl = buildProxyUrl(proxyUrl, normalizedTarget);
   const base = new URL(`https://${normalizedTarget}`);
+  const poolId = nextConnectionPoolId++;
 
-  // Cache key for this connection target
-  const cacheKey = `${wsUrl}|${sni}`;
+  // Cache key for this configured fetch instance and connection target.
+  const cacheKey = `${poolId}|${wsUrl}|${sni}`;
 
   return async function atlsFetch(input, init = {}) {
     await ensureWasm();

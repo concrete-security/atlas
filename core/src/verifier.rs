@@ -149,7 +149,9 @@ pub trait IntoVerifier {
 /// let verifier = policy.into_verifier().unwrap();
 ///
 /// // The verifier can be used with any async stream
-/// // verifier.verify(&mut stream, &peer_cert, hostname).await
+/// // verifier
+/// //     .verify(&mut stream, &peer_cert, &session_ekm, hostname)
+/// //     .await
 /// ```
 pub enum Verifier {
     /// DStack TDX verifier.
@@ -158,40 +160,36 @@ pub enum Verifier {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl AtlsVerifier for Verifier {
-    fn verify<S>(
+    async fn verify<S>(
         &self,
         stream: &mut S,
         peer_cert: &[u8],
         session_ekm: &[u8],
         hostname: &str,
-    ) -> impl Future<Output = Result<Report, AtlsVerificationError>> + Send
+    ) -> Result<Report, AtlsVerificationError>
     where
         S: AsyncByteStream,
     {
-        async move {
-            match self {
-                Verifier::DstackTdx(v) => v.verify(stream, peer_cert, session_ekm, hostname).await,
-            }
+        match self {
+            Verifier::DstackTdx(v) => v.verify(stream, peer_cert, session_ekm, hostname).await,
         }
     }
 }
 
 #[cfg(target_arch = "wasm32")]
 impl AtlsVerifier for Verifier {
-    fn verify<S>(
+    async fn verify<S>(
         &self,
         stream: &mut S,
         peer_cert: &[u8],
         session_ekm: &[u8],
         hostname: &str,
-    ) -> impl Future<Output = Result<Report, AtlsVerificationError>>
+    ) -> Result<Report, AtlsVerificationError>
     where
         S: AsyncByteStream,
     {
-        async move {
-            match self {
-                Verifier::DstackTdx(v) => v.verify(stream, peer_cert, session_ekm, hostname).await,
-            }
+        match self {
+            Verifier::DstackTdx(v) => v.verify(stream, peer_cert, session_ekm, hostname).await,
         }
     }
 }

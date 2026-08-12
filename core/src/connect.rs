@@ -111,8 +111,9 @@ use futures_rustls::TlsConnector;
 /// * `alpn` - Optional ALPN protocols (e.g., `["http/1.1", "h2"]`)
 /// * `accept_self_signed_certs` - When `true`, skip CA chain, hostname/SAN, and
 ///   certificate-expiry validation (for TEE self-signed certs); the handshake
-///   signature is still verified. When `false`, standard webpki-roots CA and
-///   hostname validation applies.
+///   signature is still verified. Low-level callers that enable this must provide
+///   an equivalent endpoint binding, such as a verified RTMR3 pin. When `false`,
+///   standard webpki-roots CA and hostname validation applies.
 ///
 /// # Returns
 ///
@@ -186,9 +187,10 @@ where
 /// Establish a TLS connection with attestation verification.
 ///
 /// This function combines TLS handshake with attestation verification:
-/// 1. Performs a TLS handshake (optionally accepting self-signed TEE certs)
-/// 2. Captures the server's leaf certificate
-/// 3. Creates the appropriate verifier from the policy
+/// 1. Validates the policy and creates the appropriate verifier
+/// 2. Performs a TLS handshake (optionally accepting self-signed TEE certs;
+///    high-level policy validation requires RTMR3 instance pinning in that mode)
+/// 3. Captures the server's leaf certificate and session EKM
 /// 4. Performs attestation verification over the TLS stream
 /// 5. Returns the verified TLS stream and attestation report
 ///
@@ -233,11 +235,11 @@ where
     crate::logging::init();
 
     let accept_self_signed = policy.accept_self_signed_certs();
+    let verifier = policy.into_verifier()?;
     let (mut tls_stream, peer_cert, session_ekm) =
         tls_handshake(stream, server_name, alpn, accept_self_signed).await?;
 
     debug!("Starting attestation verification");
-    let verifier = policy.into_verifier()?;
     let report = verifier
         .verify(&mut tls_stream, &peer_cert, &session_ekm, server_name)
         .await?;

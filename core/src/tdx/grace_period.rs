@@ -3,8 +3,8 @@
 use chrono::DateTime;
 use dcap_qvl::intel::parse_pck_extension;
 use dcap_qvl::quote::Quote;
-use dcap_qvl::QuoteCollateralV3;
 use dcap_qvl::verify::VerifiedReport;
+use dcap_qvl::QuoteCollateralV3;
 use pem::parse_many;
 use serde::Deserialize;
 
@@ -40,13 +40,11 @@ fn evaluate_grace_period(
     now_secs: u64,
     grace: u64,
 ) -> Result<(), AtlsVerificationError> {
-    let now_secs = i64::try_from(now_secs).map_err(|_| {
-        AtlsVerificationError::TcbInfoError("current time out of range".into())
-    })?;
+    let now_secs = i64::try_from(now_secs)
+        .map_err(|_| AtlsVerificationError::TcbInfoError("current time out of range".into()))?;
 
-    let grace_secs = i64::try_from(grace).map_err(|_| {
-        AtlsVerificationError::Configuration("grace_period is too large".into())
-    })?;
+    let grace_secs = i64::try_from(grace)
+        .map_err(|_| AtlsVerificationError::Configuration("grace_period is too large".into()))?;
     let expiration = tcb_date_secs.checked_add(grace_secs).ok_or_else(|| {
         AtlsVerificationError::Configuration("grace_period causes timestamp overflow".into())
     })?;
@@ -136,9 +134,7 @@ fn extract_pck_leaf_cert(
     if let Some(pem_chain) = &collateral.pck_certificate_chain {
         let certs = parse_pem_chain(pem_chain)?;
         return certs.first().cloned().ok_or_else(|| {
-            AtlsVerificationError::TcbInfoError(
-                "PCK certificate chain is empty".to_string(),
-            )
+            AtlsVerificationError::TcbInfoError("PCK certificate chain is empty".to_string())
         });
     }
 
@@ -156,17 +152,17 @@ fn extract_pck_leaf_cert(
 
 fn parse_pem_chain(pem_chain: &str) -> Result<Vec<Vec<u8>>, AtlsVerificationError> {
     let certs = parse_many(pem_chain).map_err(|e| {
-        AtlsVerificationError::TcbInfoError(format!(
-            "failed to parse PCK certificate chain: {}",
-            e
-        ))
+        AtlsVerificationError::TcbInfoError(format!("failed to parse PCK certificate chain: {}", e))
     })?;
     if certs.is_empty() {
         return Err(AtlsVerificationError::TcbInfoError(
             "failed to parse PCK certificate chain".to_string(),
         ));
     }
-    Ok(certs.into_iter().map(|pem| pem.contents().to_vec()).collect())
+    Ok(certs
+        .into_iter()
+        .map(|pem| pem.contents().to_vec())
+        .collect())
 }
 
 fn match_tcb_level<'a>(
@@ -211,8 +207,7 @@ fn match_tcb_level<'a>(
             continue;
         }
 
-        let sgx_components: Vec<u8> =
-            tcb_level.tcb.sgx_components.iter().map(|c| c.svn).collect();
+        let sgx_components: Vec<u8> = tcb_level.tcb.sgx_components.iter().map(|c| c.svn).collect();
         if sgx_components.is_empty() {
             return Err(AtlsVerificationError::TcbInfoError(
                 "no SGX components in TCB info".into(),
@@ -256,13 +251,7 @@ mod tests {
 
     #[test]
     fn test_grace_period_expired() {
-        let result = evaluate_grace_period(
-            "OutOfDate",
-            100,
-            "2024-01-01T00:00:00Z",
-            200,
-            50,
-        );
+        let result = evaluate_grace_period("OutOfDate", 100, "2024-01-01T00:00:00Z", 200, 50);
 
         assert!(matches!(
             result,
@@ -272,26 +261,14 @@ mod tests {
 
     #[test]
     fn test_grace_period_allows_within_window() {
-        let result = evaluate_grace_period(
-            "OutOfDate",
-            100,
-            "2024-01-01T00:00:00Z",
-            120,
-            50,
-        );
+        let result = evaluate_grace_period("OutOfDate", 100, "2024-01-01T00:00:00Z", 120, 50);
 
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_grace_period_zero_expires_immediately() {
-        let result = evaluate_grace_period(
-            "OutOfDate",
-            100,
-            "2024-01-01T00:00:00Z",
-            101,
-            0,
-        );
+        let result = evaluate_grace_period("OutOfDate", 100, "2024-01-01T00:00:00Z", 101, 0);
 
         assert!(matches!(
             result,

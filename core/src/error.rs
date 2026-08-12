@@ -59,7 +59,10 @@ pub enum AtlsVerificationError {
 
     /// TCB status not in allowed list.
     #[error("TCB status {status} not allowed (allowed: {allowed:?})")]
-    TcbStatusNotAllowed { status: String, allowed: Vec<String> },
+    TcbStatusNotAllowed {
+        status: String,
+        allowed: Vec<String>,
+    },
 
     /// TCB info could not be determined or parsed.
     #[error("TCB info error: {0}")]
@@ -74,7 +77,9 @@ pub enum AtlsVerificationError {
     },
 
     /// Report data mismatch - potential replay attack.
-    #[error("report data mismatch: expected {expected}, got {actual}. Possible replay/relay attack.")]
+    #[error(
+        "report data mismatch: expected {expected}, got {actual}. Possible replay/relay attack."
+    )]
     ReportDataMismatch { expected: String, actual: String },
 
     /// Configuration error.

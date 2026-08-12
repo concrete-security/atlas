@@ -63,8 +63,8 @@ def dstack_tdx_policy(
             app_compose, os_image_hash). NOT recommended for production.
         accept_self_signed_certs: Accept a self-signed server certificate,
             skipping CA chain, hostname, and expiry validation (for TEEs that
-            serve self-signed certs). Cannot be combined with
-            ``disable_runtime_verification``.
+            serve self-signed certs). Requires ``expected_rtmr3`` and cannot be
+            combined with ``disable_runtime_verification``.
         app_compose_docker_compose_file: Override the ``docker_compose_file``
             key in app_compose.
         app_compose_allowed_envs: Override the ``allowed_envs`` key in
@@ -89,6 +89,8 @@ def dstack_tdx_policy(
             "accept_self_signed_certs cannot be combined with "
             "disable_runtime_verification"
         )
+    if accept_self_signed_certs and expected_rtmr3 is None:
+        raise ValueError("accept_self_signed_certs requires expected_rtmr3")
 
     if allowed_tcb_status is None:
         allowed_tcb_status = ["UpToDate"]

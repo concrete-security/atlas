@@ -68,8 +68,8 @@ export interface DstackTdxPolicy {
   /**
    * Accept a self-signed server certificate, skipping CA chain, hostname/SAN,
    * and expiry validation (for TEEs that serve self-signed certs). Defaults to
-   * false. Cannot be combined with disable_runtime_verification. Pair with
-   * expected_rtmr3 to bind the specific instance.
+   * false. Requires expected_rtmr3 to bind the specific instance and cannot be
+   * combined with disable_runtime_verification.
    */
   accept_self_signed_certs?: boolean
 }

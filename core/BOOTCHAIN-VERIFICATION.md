@@ -24,12 +24,12 @@ The verification covers the full boot process through TDX measurement registers:
 
 The complete verification flow is:
 
-1. **TLS Certificate Verification** - Certificate hash in event log matches the connection
+1. **TLS Certificate Verification** - Certificate hash in authenticated RTMR3 dstack runtime events matches the connection
 2. **DCAP Quote Verification** - Quote signature is valid and TCB status is acceptable
 3. **Bootchain Verification** - MRTD and RTMR0-2 match expected values
-4. **RTMR Replay Verification** - Event log correctly produces all RTMRs
-5. **App Compose Verification** - Application configuration matches expected
-6. **OS Image Hash Verification** - OS image hash in event log matches expected
+4. **RTMR Replay Verification** - Event log correctly produces all RTMRs, and unsupported IMR indexes are rejected
+5. **App Compose Verification** - Application configuration matches expected RTMR3 runtime event
+6. **OS Image Hash Verification** - OS image hash in RTMR3 runtime event matches expected
 
 ## How to Use
 
@@ -79,6 +79,12 @@ See the [Computing Measurements](#computing-measurements-for-new-dstack-versions
 - To skip runtime verification, you must explicitly set `disable_runtime_verification: true` in the policy
 - **`DstackTdxPolicy::dev()`** sets `disable_runtime_verification: true` for development convenience
 - Disabling runtime verification is **NOT recommended** for production use
+- `accept_self_signed_certs` requires `expected_rtmr3` and cannot be combined with
+  `disable_runtime_verification`; without hostname validation, RTMR3 is the
+  per-instance endpoint binding
+- Atlas trusts app compose, OS image, and TLS certificate payloads only from
+  authenticated RTMR3 dstack runtime events. Same-name events in IMR0-2, IMR4+,
+  or another event namespace are not used for these decisions.
 
 ## Computing Measurements for New Dstack Versions
 

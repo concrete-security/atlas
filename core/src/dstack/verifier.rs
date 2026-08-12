@@ -32,10 +32,17 @@ struct CachedCollateral {
 /// Default collateral cache TTL: 8 hours (in seconds).
 const COLLATERAL_CACHE_TTL_SECS: u64 = 8 * 3600;
 
+/// dstack runtime events are extended into RTMR3 with this event type.
+const DSTACK_RUNTIME_EVENT_TYPE: u32 = 0x0800_0001;
+
 /// Response from the /tdx_quote endpoint.
 #[derive(Debug, serde::Deserialize)]
 struct QuoteEndpointResponse {
     quote: GetQuoteResponse,
+}
+
+fn is_dstack_runtime_event(event: &EventLog, name: &str) -> bool {
+    event.imr == 3 && event.event_type == DSTACK_RUNTIME_EVENT_TYPE && event.event == name
 }
 
 /// DstackTDXVerifier performs TDX attestation verification for dstack deployments.
@@ -93,11 +100,10 @@ impl DstackTDXVerifier {
         // Parse quote to get cache key components (FMSPC and CA)
         let parsed_quote = Quote::parse(quote)
             .map_err(|e| AtlsVerificationError::Quote(format!("Failed to parse quote: {}", e)))?;
-        let fmspc = hex::encode_upper(
-            parsed_quote
-                .fmspc()
-                .map_err(|e| AtlsVerificationError::Quote(format!("Failed to get FMSPC: {}", e)))?,
-        );
+        let fmspc =
+            hex::encode_upper(parsed_quote.fmspc().map_err(|e| {
+                AtlsVerificationError::Quote(format!("Failed to get FMSPC: {}", e))
+            })?);
         let ca = parsed_quote
             .ca()
             .map_err(|e| AtlsVerificationError::Quote(format!("Failed to get CA: {}", e)))?;
@@ -146,21 +152,22 @@ impl DstackTDXVerifier {
             }
             None => {
                 debug!("Fetching collateral from {}", pccs_url);
-                let c = get_collateral(pccs_url, quote)
-                    .await
-                    .map_err(|e| {
-                        AtlsVerificationError::Quote(format!("Failed to get collateral: {}", e))
-                    })?;
+                let c = get_collateral(pccs_url, quote).await.map_err(|e| {
+                    AtlsVerificationError::Quote(format!("Failed to get collateral: {}", e))
+                })?;
 
                 // Cache if enabled
                 if self.config.cache_collateral {
                     match self.cached_collateral.write() {
                         Ok(mut guard) => {
                             debug!("Caching collateral for FMSPC={}, CA={}", fmspc, ca);
-                            guard.insert(cache_key, CachedCollateral {
-                                collateral: c.clone(),
-                                cached_at_secs: now_secs,
-                            });
+                            guard.insert(
+                                cache_key,
+                                CachedCollateral {
+                                    collateral: c.clone(),
+                                    cached_at_secs: now_secs,
+                                },
+                            );
                         }
                         Err(_) => {
                             warn!("Collateral cache lock poisoned, skipping cache write");
@@ -174,8 +181,9 @@ impl DstackTDXVerifier {
         debug!("Collateral received, verifying DCAP quote");
 
         // Verify the quote
-        let report = verify(quote, &collateral, now_secs)
-            .map_err(|e| AtlsVerificationError::Quote(format!("DCAP verification failed: {}", e)))?;
+        let report = verify(quote, &collateral, now_secs).map_err(|e| {
+            AtlsVerificationError::Quote(format!("DCAP verification failed: {}", e))
+        })?;
 
         debug!("DCAP verification complete, TCB status: {}", report.status);
 
@@ -186,10 +194,7 @@ impl DstackTDXVerifier {
             .iter()
             .any(|s| s == &report.status);
 
-        debug!(
-            "TCB status '{}' allowed: {}",
-            report.status, tcb_allowed
-        );
+        debug!("TCB status '{}' allowed: {}", report.status, tcb_allowed);
 
         // If TCB status is OutOfDate, check it's within the grace period (if configured)
         // TODO: enforce_grace_period is currently implemented in a complex manner since
@@ -197,7 +202,13 @@ impl DstackTDXVerifier {
         // extract the TCB date from the quote and collateral manually, which is not ideal.
         // We should update enforce_grace_period when dcap-qvl adds TCB info to the VerifiedReport.
         // This would remove almost all the tdx/grace_period.rs code.
-        enforce_grace_period(&report, &parsed_quote, &collateral, self.config.grace_period, now_secs)?;
+        enforce_grace_period(
+            &report,
+            &parsed_quote,
+            &collateral,
+            self.config.grace_period,
+            now_secs,
+        )?;
 
         if !tcb_allowed {
             return Err(AtlsVerificationError::TcbStatusNotAllowed {
@@ -327,7 +338,7 @@ impl DstackTDXVerifier {
         // Find last "New TLS Certificate" event
         let cert_event = events
             .iter()
-            .rfind(|e| e.event == "New TLS Certificate");
+            .rfind(|e| is_dstack_runtime_event(e, "New TLS Certificate"));
 
         match cert_event {
             Some(event) => {
@@ -381,12 +392,10 @@ impl DstackTDXVerifier {
         // Verify against event log (trusted after RTMR replay verification)
         let event = events
             .iter()
-            .find(|e| e.event == "compose-hash")
-            .ok_or_else(|| {
-                AtlsVerificationError::AppComposeHashMismatch {
-                    expected: expected.clone(),
-                    actual: "<not found in event log>".to_string(),
-                }
+            .find(|e| is_dstack_runtime_event(e, "compose-hash"))
+            .ok_or_else(|| AtlsVerificationError::AppComposeHashMismatch {
+                expected: expected.clone(),
+                actual: "<not found in event log>".to_string(),
             })?;
 
         debug!("App compose hash from event log: {}", event.event_payload);
@@ -421,7 +430,7 @@ impl DstackTDXVerifier {
         // Verify against event log (trusted after RTMR replay verification)
         let event = events
             .iter()
-            .find(|e| e.event == "os-image-hash")
+            .find(|e| is_dstack_runtime_event(e, "os-image-hash"))
             .ok_or_else(|| AtlsVerificationError::OsImageHashMismatch {
                 expected: expected.clone(),
                 actual: Some("<not found in event log>".to_string()),
@@ -532,7 +541,6 @@ impl DstackTDXVerifier {
         debug!("Report data expected: {}", expected);
         debug!("Report data actual:   {}", actual);
 
-        
         if expected != actual {
             return Err(AtlsVerificationError::ReportDataMismatch { expected, actual });
         }
@@ -586,9 +594,9 @@ impl AtlsVerifier for DstackTDXVerifier {
 
         // 4. Verify DCAP quote using dcap-qvl directly
         debug!("Decoding quote for DCAP verification");
-        let quote_bytes = quote_response
-            .decode_quote()
-            .map_err(|e| AtlsVerificationError::Other(anyhow::anyhow!("Failed to decode quote: {}", e)))?;
+        let quote_bytes = quote_response.decode_quote().map_err(|e| {
+            AtlsVerificationError::Other(anyhow::anyhow!("Failed to decode quote: {}", e))
+        })?;
         debug!("Quote decoded ({} bytes)", quote_bytes.len());
 
         // Async quote verification - no blocking!
@@ -596,9 +604,7 @@ impl AtlsVerifier for DstackTDXVerifier {
 
         // 5. Verify report data
         let session_ekm: &[u8; 32] = session_ekm.try_into().map_err(|_| {
-            AtlsVerificationError::Configuration(
-                "session_ekm must be exactly 32 bytes".into(),
-            )
+            AtlsVerificationError::Configuration("session_ekm must be exactly 32 bytes".into())
         })?;
         self.verify_report_data(&nonce, session_ekm, &verified_report)?;
 
@@ -700,13 +706,9 @@ where
         .ok_or_else(|| AtlsVerificationError::Io("Invalid HTTP response".into()))?;
     let response_body = &response_buf[body_start..];
 
-    let response: QuoteEndpointResponse = serde_json::from_slice(response_body)
-        .map_err(|e| {
-            AtlsVerificationError::Quote(format!(
-                "Failed to parse /tdx_quote response: {}",
-                e
-            ))
-        })?;
+    let response: QuoteEndpointResponse = serde_json::from_slice(response_body).map_err(|e| {
+        AtlsVerificationError::Quote(format!("Failed to parse /tdx_quote response: {}", e))
+    })?;
 
     Ok(response.quote)
 }
@@ -742,13 +744,22 @@ fn parse_content_length(headers: &[u8]) -> Option<usize> {
 /// is not tied back to its digest is attacker-controlled. Recomputing the digest closes
 /// the chain: payload -> digest here, digest -> quote via `verify_rtmr_replay`.
 ///
-/// Only IMR 3 is checked, mirroring dstack `cc-eventlog` `TdxEventLog::validate`: IMR 0-2
-/// use the TCG multi-digest format (not this scheme) and are verified against the DCAP
-/// report by `verify_bootchain`, never via `event_payload`.
+/// IMR 0-2 use the TCG multi-digest format (not this scheme) and are verified
+/// against the DCAP report by `verify_bootchain`, never via `event_payload`.
+/// IMR >3 is rejected because dstack `replay_rtmrs()` only replays IMR 0-3; accepting
+/// higher indexes would let unmeasured entries shadow security-sensitive runtime
+/// events.
 fn verify_event_log_integrity(events: &[EventLog]) -> Result<(), AtlsVerificationError> {
     for event in events {
-        if event.imr != 3 {
-            continue;
+        match event.imr {
+            0..=2 => continue,
+            3 => {}
+            other => {
+                return Err(AtlsVerificationError::EventLogParse(format!(
+                    "unsupported IMR index {} in event log entry '{}'",
+                    other, event.event
+                )));
+            }
         }
         let payload = hex::decode(&event.event_payload).map_err(|e| {
             AtlsVerificationError::EventLogParse(format!(
@@ -795,21 +806,21 @@ mod tests {
         let events = vec![
             ev(
                 3,
-                0x0800_0001,
+                DSTACK_RUNTIME_EVENT_TYPE,
                 "app-id",
                 "ea549f02e1a25fabd1cb788380e033ec5461b2ff",
                 "b01c7a2e6a406ae9cd5aa81451e4614e112b8f404df12e6ef506962c1a5279a94dc58da0923c4b7db89e26da9e538302",
             ),
             ev(
                 3,
-                0x0800_0001,
+                DSTACK_RUNTIME_EVENT_TYPE,
                 "compose-hash",
                 "ea549f02e1a25fabd1cb788380e033ec5461b2ffe4328d753642cf035452e48b",
                 "9c1fecc259af1e8494484a391bdef460cb74d677c76dd114b1e9e7fac343da4e773b2b0eb8df7a6fc0dd8ba5edbb30e1",
             ),
             ev(
                 3,
-                0x0800_0001,
+                DSTACK_RUNTIME_EVENT_TYPE,
                 "system-ready",
                 "",
                 "1a76b2a80a0be71eae59f80945d876351a7a3fb8e9fd1ff1cede5734aa84ea11fd72b4edfbb6f04e5a85edd114c751bd",
@@ -825,7 +836,7 @@ mod tests {
     fn test_event_log_integrity_forged_payload_failure() {
         let events = vec![ev(
             3,
-            0x0800_0001,
+            DSTACK_RUNTIME_EVENT_TYPE,
             "compose-hash",
             // attacker-substituted payload, genuine compose-hash digest below
             "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
@@ -849,6 +860,125 @@ mod tests {
             "0e35f1b315ba6c912cf791e5c79dd9d3a2b8704516aa27d4e5aa78fb09ede04aef2bbd02ac7a8734c48562b9c26ba35d",
         )];
         assert!(verify_event_log_integrity(&events).is_ok());
+    }
+
+    #[test]
+    fn test_event_log_integrity_unknown_imr_failure() {
+        for imr in [4, u32::MAX] {
+            let events = vec![ev(
+                imr,
+                DSTACK_RUNTIME_EVENT_TYPE,
+                "compose-hash",
+                "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                "ignored-by-current-replay",
+            )];
+
+            assert!(matches!(
+                verify_event_log_integrity(&events),
+                Err(AtlsVerificationError::EventLogParse(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn test_security_events_outside_rtmr3_failure() {
+        let app_compose = serde_json::json!({"docker_compose_file": "services: {}"});
+        let expected_compose = get_compose_hash(&app_compose).unwrap();
+        let expected_os_image = "11".repeat(32);
+        let cert = b"unmeasured-certificate";
+        let cert_hash = hex::encode(Sha256::digest(cert));
+        let events = vec![
+            ev(
+                0,
+                DSTACK_RUNTIME_EVENT_TYPE,
+                "compose-hash",
+                &expected_compose,
+                "unused",
+            ),
+            ev(
+                1,
+                DSTACK_RUNTIME_EVENT_TYPE,
+                "os-image-hash",
+                &expected_os_image,
+                "unused",
+            ),
+            ev(
+                2,
+                DSTACK_RUNTIME_EVENT_TYPE,
+                "New TLS Certificate",
+                &hex::encode(cert_hash.as_bytes()),
+                "unused",
+            ),
+            ev(3, 0x0800_0002, "compose-hash", &expected_compose, "unused"),
+            ev(
+                3,
+                0x0800_0002,
+                "os-image-hash",
+                &expected_os_image,
+                "unused",
+            ),
+            ev(
+                3,
+                0x0800_0002,
+                "New TLS Certificate",
+                &hex::encode(cert_hash.as_bytes()),
+                "unused",
+            ),
+        ];
+        let verifier = DstackTDXVerifier::new(DstackTDXVerifierConfig {
+            app_compose: Some(app_compose),
+            os_image_hash: Some(expected_os_image),
+            disable_runtime_verification: true,
+            ..Default::default()
+        })
+        .unwrap();
+
+        assert!(!verifier.verify_cert_in_eventlog(cert, &events).unwrap());
+        assert!(verifier.verify_app_compose(&events).is_err());
+        assert!(verifier.verify_os_image_hash(&events).is_err());
+    }
+
+    #[test]
+    fn test_security_events_in_rtmr3_success() {
+        let app_compose = serde_json::json!({"docker_compose_file": "services: {}"});
+        let expected_compose = get_compose_hash(&app_compose).unwrap();
+        let expected_os_image = "11".repeat(32);
+        let cert = b"measured-certificate";
+        let cert_hash = hex::encode(Sha256::digest(cert));
+        let events = vec![
+            ev(
+                3,
+                DSTACK_RUNTIME_EVENT_TYPE,
+                "compose-hash",
+                &expected_compose,
+                "unused",
+            ),
+            ev(
+                3,
+                DSTACK_RUNTIME_EVENT_TYPE,
+                "os-image-hash",
+                &expected_os_image,
+                "unused",
+            ),
+            ev(
+                3,
+                DSTACK_RUNTIME_EVENT_TYPE,
+                "New TLS Certificate",
+                &hex::encode(cert_hash.as_bytes()),
+                "unused",
+            ),
+        ];
+        let verifier = DstackTDXVerifier::new(DstackTDXVerifierConfig {
+            app_compose: Some(app_compose),
+            os_image_hash: Some(expected_os_image),
+            disable_runtime_verification: true,
+            ..Default::default()
+        })
+        .unwrap();
+
+        assert!(verifier.verify_cert_in_eventlog(cert, &events).unwrap());
+        assert!(verifier.verify_app_compose(&events).is_ok());
+        assert!(verifier.verify_os_image_hash(&events).is_ok());
     }
 
     /// Pinned RTMR3 used by the tests (48 bytes = 96 hex chars, SHA384-sized).

@@ -52,10 +52,7 @@ impl From<Report> for Attestation {
     fn from(report: Report) -> Self {
         match report {
             Report::Tdx(verified) => {
-                let measurement = verified
-                    .report
-                    .as_td10()
-                    .map(|td| hex::encode(td.mr_td));
+                let measurement = verified.report.as_td10().map(|td| hex::encode(td.mr_td));
                 Self {
                     trusted: true,
                     tee_type: "tdx".to_string(),

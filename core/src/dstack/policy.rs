@@ -84,9 +84,10 @@ pub struct DstackTdxPolicy {
     /// verified, so the peer must hold the certificate's private key regardless.
     ///
     /// Because this drops the hostname check, it removes the only per-connection
-    /// endpoint binding at the TLS layer; pair it with `expected_rtmr3` to bind the
-    /// specific instance. It is rejected together with `disable_runtime_verification`
-    /// (that combination pins neither identity nor measurements).
+    /// endpoint binding at the TLS layer; `expected_rtmr3` is required to bind the
+    /// specific instance. It is also rejected together with
+    /// `disable_runtime_verification` (that combination pins neither identity nor
+    /// measurements).
     #[serde(default)]
     pub accept_self_signed_certs: bool,
 }
@@ -110,7 +111,9 @@ impl Default for DstackTdxPolicy {
 
 /// Check if a string is a valid lowercase hex string.
 fn is_valid_hex(s: &str) -> bool {
-    !s.is_empty() && s.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+    !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
 }
 
 impl DstackTdxPolicy {
@@ -138,6 +141,7 @@ impl DstackTdxPolicy {
     /// - `expected_bootchain` fields are valid hex strings (if provided)
     /// - `grace_period` requires `allowed_tcb_status` to include `OutOfDate`
     /// - `accept_self_signed_certs` is not combined with `disable_runtime_verification`
+    /// - `accept_self_signed_certs` is bound to a specific instance by `expected_rtmr3`
     pub fn validate(&self) -> Result<(), AtlsVerificationError> {
         // Validate TCB status values
         for status in &self.allowed_tcb_status {
@@ -158,15 +162,18 @@ impl DstackTdxPolicy {
                     .into(),
             ));
         }
+        if self.accept_self_signed_certs && self.expected_rtmr3.is_none() {
+            return Err(AtlsVerificationError::Configuration(
+                "accept_self_signed_certs requires expected_rtmr3".into(),
+            ));
+        }
 
         // Validate grace period policy requirements
-        if self.grace_period.is_some() {
-            if !self.allowed_tcb_status.iter().any(|s| s == "OutOfDate") {
-                return Err(AtlsVerificationError::Configuration(
-                    "grace_period requires allowed_tcb_status to include OutOfDate"
-                        .into(),
-                ));
-            }
+        if self.grace_period.is_some() && !self.allowed_tcb_status.iter().any(|s| s == "OutOfDate")
+        {
+            return Err(AtlsVerificationError::Configuration(
+                "grace_period requires allowed_tcb_status to include OutOfDate".into(),
+            ));
         }
 
         // Validate os_image_hash is hex
@@ -279,7 +286,9 @@ mod tests {
     #[test]
     fn test_dstack_tdx_policy_dev() {
         let policy = DstackTdxPolicy::dev();
-        assert!(policy.allowed_tcb_status.contains(&"SWHardeningNeeded".to_string()));
+        assert!(policy
+            .allowed_tcb_status
+            .contains(&"SWHardeningNeeded".to_string()));
         assert!(policy.disable_runtime_verification);
         // dev() must not also skip cert validation — that combination is rejected.
         assert!(!policy.accept_self_signed_certs);
@@ -292,6 +301,7 @@ mod tests {
         let policy = DstackTdxPolicy {
             accept_self_signed_certs: true,
             disable_runtime_verification: true,
+            expected_rtmr3: Some(TEST_RTMR3.into()),
             ..Default::default()
         };
         let err = policy
@@ -304,6 +314,35 @@ mod tests {
             ),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn test_self_signed_without_rtmr3_rejected() {
+        let policy = DstackTdxPolicy {
+            accept_self_signed_certs: true,
+            ..Default::default()
+        };
+
+        let err = policy
+            .validate()
+            .expect_err("self-signed certificate acceptance must require an RTMR3 pin")
+            .to_string();
+
+        assert!(
+            err.contains("accept_self_signed_certs requires expected_rtmr3"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_self_signed_with_rtmr3_accepted() {
+        let policy = DstackTdxPolicy {
+            expected_rtmr3: Some(TEST_RTMR3.into()),
+            accept_self_signed_certs: true,
+            ..Default::default()
+        };
+
+        assert!(policy.validate().is_ok());
     }
 
     #[test]

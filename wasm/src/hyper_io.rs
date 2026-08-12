@@ -44,7 +44,8 @@ impl<T: AsyncRead> Read for HyperIo<T> {
         }
 
         // SAFETY: We just initialized the buffer
-        let initialized = unsafe { std::slice::from_raw_parts_mut(slice.as_mut_ptr() as *mut u8, len) };
+        let initialized =
+            unsafe { std::slice::from_raw_parts_mut(slice.as_mut_ptr() as *mut u8, len) };
 
         match self.project().inner.poll_read(cx, initialized) {
             Poll::Ready(Ok(n)) => {

@@ -70,6 +70,22 @@ class TestDstackTdxPolicy:
         with pytest.raises(ValueError, match="must be provided together"):
             dstack_tdx_policy(os_image_hash=os_image_hash)
 
+    def test_self_signed_without_rtmr3_raises(self):
+        """Self-signed mode must be pinned to one measured RTMR3 instance."""
+        with pytest.raises(ValueError, match="requires expected_rtmr3"):
+            dstack_tdx_policy(accept_self_signed_certs=True)
+
+    def test_self_signed_with_rtmr3_is_included(self):
+        """Self-signed mode is emitted only with the required RTMR3 pin."""
+        expected_rtmr3 = "11" * 48
+        policy = dstack_tdx_policy(
+            expected_rtmr3=expected_rtmr3,
+            accept_self_signed_certs=True,
+        )
+
+        assert policy["accept_self_signed_certs"] is True
+        assert policy["expected_rtmr3"] == expected_rtmr3
+
     def test_dstack_tdx_policy_app_compose_overrides(self):
         """Test that app_compose overrides work correctly."""
         policy = dstack_tdx_policy(
