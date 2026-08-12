@@ -1,6 +1,6 @@
 # Security Policy
 
-Atlas establishes TLS connections only after verifying remote TEE attestation evidence against a caller-supplied policy. Vulnerabilities that weaken that decision can expose every application built on top of the affected binding.
+Atlas establishes attested TLS connections to hosts or targets explicitly configured for aTLS only after verifying remote TEE attestation evidence against a caller-supplied policy. Other destinations may use the binding's standard networking fallback and are not attested. Vulnerabilities that weaken the aTLS verification decision can expose every application built on top of the affected binding.
 
 ## Supported Versions
 
