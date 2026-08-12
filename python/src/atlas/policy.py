@@ -33,14 +33,15 @@ def dstack_tdx_policy(
     app_compose: Optional[dict] = None,
     expected_bootchain: Optional[dict] = None,
     os_image_hash: Optional[str] = None,
-    expected_rtmr3: Optional[str] = None,
     allowed_tcb_status: Optional[list[str]] = None,
     disable_runtime_verification: bool = False,
-    accept_self_signed_certs: bool = False,
     app_compose_docker_compose_file: Optional[str] = None,
     app_compose_allowed_envs: Optional[list[str]] = None,
     pccs_url: Optional[str] = None,
     cache_collateral: bool = False,
+    *,
+    expected_rtmr3: Optional[str] = None,
+    accept_self_signed_certs: bool = False,
 ) -> dict:
     """Build a DstackTdx attestation policy dict.
 
@@ -57,20 +58,20 @@ def dstack_tdx_policy(
             Must be used together with ``expected_bootchain``.
         allowed_tcb_status: List of acceptable TCB status values.
             Defaults to ``["UpToDate"]``.
-        expected_rtmr3: Expected RTMR3 (96 lowercase hex chars). Pins the full
-            runtime measurement register; omit to skip the check.
         disable_runtime_verification: Skip runtime checks (bootchain,
             app_compose, os_image_hash). NOT recommended for production.
-        accept_self_signed_certs: Accept a self-signed server certificate,
-            skipping CA chain, hostname, and expiry validation (for TEEs that
-            serve self-signed certs). Requires ``expected_rtmr3`` and cannot be
-            combined with ``disable_runtime_verification``.
         app_compose_docker_compose_file: Override the ``docker_compose_file``
             key in app_compose.
         app_compose_allowed_envs: Override the ``allowed_envs`` key in
             app_compose.
         pccs_url: PCCS URL for Intel collateral fetching.
         cache_collateral: Cache Intel collateral between verifications.
+        expected_rtmr3: Keyword-only expected RTMR3 (96 lowercase hex chars).
+            Pins the full runtime measurement register; omit to skip the check.
+        accept_self_signed_certs: Keyword-only self-signed certificate mode.
+            Skips CA chain, hostname, and expiry validation, requires
+            ``expected_rtmr3``, and cannot be combined with
+            ``disable_runtime_verification``.
 
     Returns:
         Policy dict like ``{"type": "dstack_tdx", ...}``.

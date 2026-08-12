@@ -8,7 +8,7 @@ help:
 	@echo "  make test           # run native Rust tests (core, proxy)"
 	@echo "  make test-proxy     # run proxy unit and integration tests"
 	@echo "  make test-wasm      # cargo check atlas-wasm for wasm32 target"
-	@echo "  make test-wasm-node # run WASM tests in Node.js via wasm-pack"
+	@echo "  make test-wasm-node # run Rust/WASM and JS wrapper tests in Node.js"
 	@echo "  make test-node      # run Node.js binding tests"
 	@echo "  make test-private-ai-sdk # run AI provider package tests"
 	@echo "  make test-python    # run Python binding tests"
@@ -40,6 +40,7 @@ test-wasm:
 # Run WASM tests in Node.js via wasm-pack
 test-wasm-node:
 	wasm-pack test --node wasm
+	cd wasm && npm test
 
 # Node.js binding tests
 test-node:

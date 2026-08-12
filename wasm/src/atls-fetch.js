@@ -75,19 +75,26 @@ async function ensureWasm() {
 const connectionCache = new Map();
 let nextConnectionPoolId = 0;
 
+function closeCachedConnection(cacheKey) {
+  const http = connectionCache.get(cacheKey);
+  connectionCache.delete(cacheKey);
+  if (!http) return;
+
+  try {
+    http.close();
+  } catch (e) {
+    // Ignore errors during cleanup
+  }
+}
+
 /**
  * Close all cached connections.
  * Call this when you want to clean up resources.
  */
 export function closeAllConnections() {
-  for (const http of connectionCache.values()) {
-    try {
-      http.close();
-    } catch (e) {
-      // Ignore errors during cleanup
-    }
+  for (const cacheKey of [...connectionCache.keys()]) {
+    closeCachedConnection(cacheKey);
   }
-  connectionCache.clear();
 }
 
 /**
@@ -157,7 +164,10 @@ function buildProxyUrl(base, target) {
  * @param {string} [options.serverName] - TLS server name (defaults to hostname from targetHost)
  * @param {Object} [options.defaultHeaders] - Default headers to include in all requests
  * @param {Function} [options.onAttestation] - Callback when attestation is received (only on new connections)
- * @returns {Function} A fetch-compatible async function
+ * The returned function has a `close()` method that releases only its pooled
+ * connection. A later request reconnects and re-attests.
+ *
+ * @returns {Function & {close: Function}} A fetch-compatible async function
  */
 export function createAtlsFetch(options) {
   const { proxyUrl, targetHost, serverName, defaultHeaders, onAttestation, policy } = options;
@@ -182,7 +192,7 @@ export function createAtlsFetch(options) {
   // Cache key for this configured fetch instance and connection target.
   const cacheKey = `${poolId}|${wsUrl}|${sni}`;
 
-  return async function atlsFetch(input, init = {}) {
+  async function atlsFetch(input, init = {}) {
     await ensureWasm();
 
     // Try to reuse an existing connection
@@ -196,12 +206,7 @@ export function createAtlsFetch(options) {
       // Need to create a new connection
       // First, clean up any stale connection
       if (http) {
-        try {
-          http.close();
-        } catch (e) {
-          // Ignore cleanup errors
-        }
-        connectionCache.delete(cacheKey);
+        closeCachedConnection(cacheKey);
       }
 
       // Connect and perform aTLS handshake with policy
@@ -218,8 +223,7 @@ export function createAtlsFetch(options) {
         } catch (e) {
           console.error("[atls-fetch] onAttestation callback failed:", e);
           // Clean up the connection on attestation callback failure
-          connectionCache.delete(cacheKey);
-          try { http.close(); } catch (_) {}
+          closeCachedConnection(cacheKey);
           throw e;
         }
       }
@@ -265,8 +269,7 @@ export function createAtlsFetch(options) {
       );
     } catch (e) {
       // On request failure, remove the connection from cache
-      connectionCache.delete(cacheKey);
-      try { http.close(); } catch (_) {}
+      closeCachedConnection(cacheKey);
       throw e;
     }
 
@@ -292,7 +295,10 @@ export function createAtlsFetch(options) {
     });
 
     return response;
-  };
+  }
+
+  atlsFetch.close = () => closeCachedConnection(cacheKey);
+  return atlsFetch;
 }
 
 // Re-export for advanced usage

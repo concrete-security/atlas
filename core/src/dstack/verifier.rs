@@ -32,6 +32,12 @@ struct CachedCollateral {
 /// Default collateral cache TTL: 8 hours (in seconds).
 const COLLATERAL_CACHE_TTL_SECS: u64 = 8 * 3600;
 
+/// Maximum size of the unauthenticated `/tdx_quote` HTTP response headers.
+const MAX_QUOTE_RESPONSE_HEADER_SIZE: usize = 64 * 1024;
+
+/// Maximum size of the unauthenticated `/tdx_quote` HTTP response body.
+const MAX_QUOTE_RESPONSE_BODY_SIZE: usize = 16 * 1024 * 1024;
+
 /// dstack runtime events are extended into RTMR3 with this event type.
 const DSTACK_RUNTIME_EVENT_TYPE: u32 = 0x0800_0001;
 
@@ -673,9 +679,11 @@ where
         .await
         .map_err(|e| AtlsVerificationError::Io(e.to_string()))?;
 
-    // Read HTTP response
+    // Read the unauthenticated HTTP response with strict framing and size bounds.
+    // The peer controls these bytes until quote verification completes.
     let mut response_buf = Vec::new();
     let mut chunk = [0u8; 4096];
+    let mut expected_response_len = None;
 
     // Read until we have the complete response
     loop {
@@ -688,14 +696,37 @@ where
         }
         response_buf.extend_from_slice(&chunk[..n]);
 
-        // Check if we have the complete response (look for end of body)
-        if let Some(body_start) = find_http_body_start(&response_buf) {
-            // Try to parse content-length header
-            if let Some(content_length) = parse_content_length(&response_buf[..body_start]) {
-                if response_buf.len() >= body_start + content_length {
-                    break;
+        if expected_response_len.is_none() {
+            if let Some(body_start) = find_http_body_start(&response_buf) {
+                if body_start > MAX_QUOTE_RESPONSE_HEADER_SIZE {
+                    return Err(AtlsVerificationError::Io(format!(
+                        "quote response headers exceed {} bytes",
+                        MAX_QUOTE_RESPONSE_HEADER_SIZE
+                    )));
                 }
+
+                let content_length = parse_content_length(&response_buf[..body_start])?;
+                if content_length > MAX_QUOTE_RESPONSE_BODY_SIZE {
+                    return Err(AtlsVerificationError::Io(format!(
+                        "quote response body exceeds {} bytes",
+                        MAX_QUOTE_RESPONSE_BODY_SIZE
+                    )));
+                }
+
+                expected_response_len =
+                    Some(body_start.checked_add(content_length).ok_or_else(|| {
+                        AtlsVerificationError::Io("quote response length overflow".into())
+                    })?);
+            } else if response_buf.len() > MAX_QUOTE_RESPONSE_HEADER_SIZE {
+                return Err(AtlsVerificationError::Io(format!(
+                    "quote response headers exceed {} bytes",
+                    MAX_QUOTE_RESPONSE_HEADER_SIZE
+                )));
             }
+        }
+
+        if expected_response_len.is_some_and(|expected| response_buf.len() >= expected) {
+            break;
         }
     }
 
@@ -704,7 +735,21 @@ where
     // Parse HTTP response
     let body_start = find_http_body_start(&response_buf)
         .ok_or_else(|| AtlsVerificationError::Io("Invalid HTTP response".into()))?;
-    let response_body = &response_buf[body_start..];
+    let content_length = parse_content_length(&response_buf[..body_start])?;
+    let expected_response_len = body_start
+        .checked_add(content_length)
+        .ok_or_else(|| AtlsVerificationError::Io("quote response length overflow".into()))?;
+    if response_buf.len() < expected_response_len {
+        return Err(AtlsVerificationError::Io(
+            "quote response ended before the declared Content-Length".into(),
+        ));
+    }
+    if response_buf.len() > expected_response_len {
+        return Err(AtlsVerificationError::Io(
+            "quote response contains data beyond the declared Content-Length".into(),
+        ));
+    }
+    let response_body = &response_buf[body_start..expected_response_len];
 
     let response: QuoteEndpointResponse = serde_json::from_slice(response_body).map_err(|e| {
         AtlsVerificationError::Quote(format!("Failed to parse /tdx_quote response: {}", e))
@@ -723,16 +768,35 @@ fn find_http_body_start(data: &[u8]) -> Option<usize> {
     None
 }
 
-/// Parse Content-Length header from HTTP response.
-fn parse_content_length(headers: &[u8]) -> Option<usize> {
-    let headers_str = std::str::from_utf8(headers).ok()?;
-    for line in headers_str.lines() {
-        if line.to_lowercase().starts_with("content-length:") {
-            let value = line.split(':').nth(1)?.trim();
-            return value.parse().ok();
+/// Parse the required, unique Content-Length header from an HTTP response.
+fn parse_content_length(headers: &[u8]) -> Result<usize, AtlsVerificationError> {
+    let headers_str = std::str::from_utf8(headers)
+        .map_err(|_| AtlsVerificationError::Io("invalid quote response headers".into()))?;
+    let mut content_length = None;
+
+    for line in headers_str.split("\r\n").skip(1) {
+        if line.is_empty() {
+            continue;
+        }
+        let Some((name, value)) = line.split_once(':') else {
+            return Err(AtlsVerificationError::Io(
+                "invalid quote response header".into(),
+            ));
+        };
+        if name.eq_ignore_ascii_case("content-length") {
+            if content_length.is_some() {
+                return Err(AtlsVerificationError::Io(
+                    "duplicate Content-Length in quote response".into(),
+                ));
+            }
+            content_length = Some(value.trim().parse().map_err(|_| {
+                AtlsVerificationError::Io("invalid Content-Length in quote response".into())
+            })?);
         }
     }
-    None
+
+    content_length
+        .ok_or_else(|| AtlsVerificationError::Io("quote response is missing Content-Length".into()))
 }
 
 /// Authenticate RTMR3 event payloads against their logged digests.
@@ -787,6 +851,85 @@ fn verify_event_log_integrity(events: &[EventLog]) -> Result<(), AtlsVerificatio
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn get_quote_from_response(
+        response: Vec<u8>,
+    ) -> Result<GetQuoteResponse, AtlsVerificationError> {
+        let capacity = response.len().max(1024) + 1024;
+        let (mut client, mut server) = tokio::io::duplex(capacity);
+        let writer = tokio::spawn(async move {
+            server.write_all(&response).await.unwrap();
+            server.shutdown().await.unwrap();
+        });
+
+        let result = get_quote_over_http(&mut client, &[0u8; 32], "example.test").await;
+        writer.await.unwrap();
+        result
+    }
+
+    #[tokio::test]
+    async fn test_quote_response_valid_content_length_success() {
+        let body = br#"{"quote":{"quote":"","event_log":""}}"#;
+        let response =
+            format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len()).into_bytes();
+        let response = [response, body.to_vec()].concat();
+
+        let quote = get_quote_from_response(response).await.unwrap();
+
+        assert_eq!(quote.quote, "");
+        assert_eq!(quote.event_log, "");
+    }
+
+    #[tokio::test]
+    async fn test_quote_response_oversized_header_failure() {
+        let response = [
+            b"HTTP/1.1 200 OK\r\nX-Fill: ".as_slice(),
+            &vec![b'a'; 64 * 1024],
+        ]
+        .concat();
+
+        let error = get_quote_from_response(response).await.unwrap_err();
+
+        assert!(error.to_string().contains("quote response headers exceed"));
+    }
+
+    #[tokio::test]
+    async fn test_quote_response_oversized_body_declaration_failure() {
+        let response = b"HTTP/1.1 200 OK\r\nContent-Length: 16777217\r\n\r\n".to_vec();
+
+        let error = get_quote_from_response(response).await.unwrap_err();
+
+        assert!(error.to_string().contains("quote response body exceeds"));
+    }
+
+    #[tokio::test]
+    async fn test_quote_response_missing_content_length_failure() {
+        let response =
+            b"HTTP/1.1 200 OK\r\n\r\n{\"quote\":{\"quote\":\"\",\"event_log\":\"\"}}".to_vec();
+
+        let error = get_quote_from_response(response).await.unwrap_err();
+
+        assert!(error.to_string().contains("missing Content-Length"));
+    }
+
+    #[tokio::test]
+    async fn test_quote_response_duplicate_content_length_failure() {
+        let response =
+            b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nContent-Length: 0\r\n\r\n".to_vec();
+
+        let error = get_quote_from_response(response).await.unwrap_err();
+
+        assert!(error.to_string().contains("duplicate Content-Length"));
+    }
+
+    #[tokio::test]
+    async fn test_quote_response_truncated_body_failure() {
+        let response = b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nshort".to_vec();
+
+        let error = get_quote_from_response(response).await.unwrap_err();
+
+        assert!(error.to_string().contains("ended before"));
+    }
 
     fn ev(imr: u32, event_type: u32, event: &str, event_payload: &str, digest: &str) -> EventLog {
         EventLog {

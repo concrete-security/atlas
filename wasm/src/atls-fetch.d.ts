@@ -17,7 +17,11 @@ export interface AtlsResponse extends Response {
   readonly attestation: AttestationResult;
 }
 
-export type AtlsFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<AtlsResponse>;
+export interface AtlsFetch {
+  (input: RequestInfo | URL, init?: RequestInit): Promise<AtlsResponse>;
+  /** Close this fetch instance's pooled connection. The next request reconnects. */
+  close(): void;
+}
 
 export function createAtlsFetch(options: AtlsFetchOptions): AtlsFetch;
 
