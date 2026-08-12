@@ -862,8 +862,7 @@ mod tests {
             server.shutdown().await.unwrap();
         });
 
-        let mut nonce = [0u8; 32];
-        rand::Rng::fill(&mut rand::thread_rng(), &mut nonce);
+        let nonce: [u8; 32] = rand::random();
         let result = get_quote_over_http(&mut client, &nonce, "example.test").await;
         writer.await.unwrap();
         result
