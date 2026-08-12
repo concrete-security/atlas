@@ -24,6 +24,9 @@ on:
 env:
   CRATE_BASE_DIR: ${{ github.workspace }}/core
 
+permissions:
+  contents: read
+
 jobs:
   package:
     runs-on: ubuntu-latest
