@@ -52,6 +52,14 @@ pub enum AtlsVerificationError {
         actual: Option<String>,
     },
 
+    /// A pinned runtime RTMR3 event was missing or carried an unexpected payload.
+    #[error("runtime event '{event}' mismatch: expected {expected}, got {actual:?}")]
+    RuntimeEventMismatch {
+        event: String,
+        expected: String,
+        actual: Option<String>,
+    },
+
     /// TCB status not in allowed list.
     #[error("TCB status {status} not allowed (allowed: {allowed:?})")]
     TcbStatusNotAllowed { status: String, allowed: Vec<String> },

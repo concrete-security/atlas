@@ -1,6 +1,22 @@
 //! Configuration types for DStack TDX verification.
 
 use crate::tdx::ExpectedBootchain;
+use serde::{Deserialize, Serialize};
+
+/// A required runtime RTMR3 event and its expected (hex-encoded) payload.
+///
+/// dstack lets a guest extend RTMR3 at runtime with named events (e.g.
+/// `compose-hash`, or application-defined ones). This pins such an event by
+/// name: verification fails unless the (RTMR-replay-trusted) event log contains
+/// an event with this `event` name whose `event_payload` equals `payload`. The
+/// last occurrence wins, so a value re-emitted on rotation supersedes earlier ones.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeEventExpectation {
+    /// Event name as it appears in the dstack event log (e.g. `concrete-security-cvm`).
+    pub event: String,
+    /// Expected `event_payload`: lowercase hex of the extended payload bytes.
+    pub payload: String,
+}
 
 /// Configuration for DstackTDXVerifier.
 ///
@@ -41,6 +57,13 @@ pub struct DstackTDXVerifierConfig {
     /// The SHA256 hash of the OS image that should be running in the TD.
     pub os_image_hash: Option<String>,
 
+    /// Expected runtime RTMR3 events to pin (by name → payload).
+    ///
+    /// Empty by default. When non-empty, each entry must be present in the
+    /// (RTMR-replay-trusted) event log with a matching payload, in addition to
+    /// the standard bootchain/app_compose/os_image checks.
+    pub expected_runtime_events: Vec<RuntimeEventExpectation>,
+
     /// PCCS URL for collateral fetching.
     ///
     /// If None, uses Intel's default PCS endpoint.
@@ -62,6 +85,7 @@ impl Default for DstackTDXVerifierConfig {
             disable_runtime_verification: false,
             expected_bootchain: None,
             os_image_hash: None,
+            expected_runtime_events: Vec::new(),
             pccs_url: None,
             cache_collateral: true,
         }
@@ -127,6 +151,12 @@ impl DstackTDXVerifierBuilder {
     /// Set the expected OS image hash.
     pub fn os_image_hash(mut self, hash: impl Into<String>) -> Self {
         self.config.os_image_hash = Some(hash.into());
+        self
+    }
+
+    /// Set the expected runtime RTMR3 events to pin.
+    pub fn expected_runtime_events(mut self, events: Vec<RuntimeEventExpectation>) -> Self {
+        self.config.expected_runtime_events = events;
         self
     }
 
