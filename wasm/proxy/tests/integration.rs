@@ -76,7 +76,11 @@ async fn spawn_proxy(
 
                             let final_target = shared_target.lock().map(|guard| guard.clone()).unwrap_or(default_target);
 
-                            if !allowlist_clone.contains(&final_target) {
+                            let target_allowed = allowlist_clone.contains(&final_target) || allowlist_clone.iter().any(|pattern| {
+                                pattern.strip_prefix('*')
+                                    .is_some_and(|suffix| !suffix.is_empty() && final_target.ends_with(suffix))
+                            });
+                            if !target_allowed {
                                 let _ = ws_stream.close(None).await;
                                 return;
                             }

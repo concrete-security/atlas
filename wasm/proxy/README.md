@@ -167,6 +167,76 @@ Browser                     Proxy                       TEE
 - Proxy only enforces allowlist and forwards bytes
 - All security-critical operations happen in browser WASM or TEE
 
+## Deployment
+
+### Quick Start
+
+1. Point your domain DNS to the host IP
+2. Clone and deploy:
+
+```bash
+git clone git@github.com:concrete-security/atlas.git
+cd atlas/wasm/proxy/deploy
+DOMAIN=proxy.yourdomain.com TEE_TARGET=tee.backend.com:443 ALLOWLIST=tee.backend.com:443 \
+  docker compose up -d
+```
+
+Caddy automatically obtains and renews TLS certificates via Let's Encrypt.
+
+### Configuration
+
+Set environment variables before running `docker compose up`:
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `DOMAIN` | Public domain for the proxy | `proxy.example.com` |
+| `TEE_TARGET` | Default TEE backend `host:port` | `tee.backend.com:443` |
+| `ALLOWLIST` | Comma-separated allowed `host:port` pairs | `tee.backend.com:443,backup:443` |
+
+You can also create a `.env` file in the `deploy/` directory:
+
+```bash
+DOMAIN=proxy.example.com
+TEE_TARGET=tee.backend.com:443
+ALLOWLIST=tee.backend.com:443
+```
+
+### Standalone Docker
+
+To run the proxy without Caddy (e.g., behind your own reverse proxy):
+
+```bash
+# Build from repository root
+docker build -t atlas-proxy -f wasm/proxy/Dockerfile .
+
+# Run with required environment variables
+docker run -d \
+  -e ATLS_PROXY_ALLOWLIST="tee.backend.com:443" \
+  -e ATLS_PROXY_TARGET="tee.backend.com:443" \
+  -p 9000:9000 \
+  atlas-proxy
+```
+
+### Deploy Directory
+
+See `deploy/` for:
+- `docker-compose.yml` - production deployment with Caddy + proxy
+- `Caddyfile` - Caddy reverse proxy config (used by docker-compose)
+- `benchmark.mjs` - performance comparison script
+- `BENCHMARK.md` - benchmark results
+
+## Benchmarking
+
+Compare direct vs proxy latency:
+
+```bash
+cd deploy
+npm install ws
+node benchmark.mjs [iterations] [max_tokens]
+```
+
+See `deploy/BENCHMARK.md` for detailed results and methodology.
+
 ## See Also
 
 - [wasm/README.md](../README.md) - WASM binding documentation
