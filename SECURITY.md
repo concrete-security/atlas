@@ -53,6 +53,7 @@ The following properties must hold:
 - the TLS server name and certificate chain are verified before the connection is returned;
 - TDX evidence is cryptographically verified and its TCB status is explicitly allowed by policy;
 - the attested certificate and EKM bind the evidence to the current TLS connection and prevent replay across sessions;
+- TLS session resumption and 0-RTT are never used: every connection performs a full handshake followed by fresh attestation verification before it is returned;
 - when runtime verification is enabled, expected bootchain measurements, OS image, application composition, and replayed runtime measurements must all match;
 - verification failures are fail-closed and never return a usable connection;
 - language bindings preserve the core verification result and do not silently weaken policy;

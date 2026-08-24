@@ -9,6 +9,7 @@ use crate::error::AtlsVerificationError;
 use crate::policy::Policy;
 use crate::verifier::{AsyncByteStream, Report};
 use crate::AtlsVerifier;
+use rustls::client::Resumption;
 use rustls::pki_types::ServerName;
 use rustls::{ClientConfig, RootCertStore};
 use std::sync::Arc;
@@ -55,6 +56,14 @@ where
     let mut config = ClientConfig::builder()
         .with_root_certificates(root_store)
         .with_no_client_auth();
+
+    // Attestation evidence is bound to this connection's EKM, so every
+    // connection must run a fresh verification: never store or offer session
+    // tickets, so a session can't resume past attestation.
+    config.resumption = Resumption::disabled();
+    // EKM is only transcript-bound on TLS 1.2 with extended master secret
+    // (RFC 7627); reject TLS 1.2 peers that don't support it.
+    config.require_ems = true;
 
     if let Some(protocols) = alpn {
         config.alpn_protocols = protocols.into_iter().map(|s| s.into_bytes()).collect();
