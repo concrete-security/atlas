@@ -354,7 +354,10 @@ mod tests {
         let full = merge_with_default_app_compose(&user_compose);
 
         // User values are preserved
-        assert_eq!(full["docker_compose_file"], "services:\n  app:\n    image: test");
+        assert_eq!(
+            full["docker_compose_file"],
+            "services:\n  app:\n    image: test"
+        );
         assert_eq!(full["allowed_envs"], json!(["MY_SECRET"]));
 
         // Defaults are filled in

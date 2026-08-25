@@ -1,11 +1,11 @@
+use atlas_rs::{
+    atls_connect as core_atls_connect, dstack::merge_with_default_app_compose, Policy, Report,
+    TlsStream as CoreTlsStream,
+};
 use bytes::{Bytes, BytesMut};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use once_cell::sync::Lazy;
-use atlas_rs::{
-    dstack::merge_with_default_app_compose, atls_connect as core_atls_connect, Policy, Report,
-    TlsStream as CoreTlsStream,
-};
 use rustls::crypto::aws_lc_rs::default_provider;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -97,14 +97,9 @@ pub async fn atls_connect(
         .await
         .map_err(|err| Error::from_reason(format!("tcp connect failed: {err}")))?;
 
-    let (tls, report) = core_atls_connect(
-        tcp,
-        &server_name,
-        policy,
-        Some(vec!["http/1.1".into()]),
-    )
-    .await
-    .map_err(|err| Error::from_reason(format!("atls handshake failed: {err}")))?;
+    let (tls, report) = core_atls_connect(tcp, &server_name, policy, Some(vec!["http/1.1".into()]))
+        .await
+        .map_err(|err| Error::from_reason(format!("atls handshake failed: {err}")))?;
 
     let socket_id = NEXT_SOCKET_ID.fetch_add(1, Ordering::SeqCst);
     let (reader, writer) = tokio::io::split(tls);
@@ -165,10 +160,12 @@ pub async fn socket_write(socket_id: u32, data: Buffer) -> napi::Result<u32> {
     let bytes = Bytes::from(data.to_vec());
     {
         let mut writer = writer.lock().await;
-        writer.write_all(&bytes)
+        writer
+            .write_all(&bytes)
             .await
             .map_err(|e| Error::from_reason(format!("socket write error: {e}")))?;
-        writer.flush()
+        writer
+            .flush()
             .await
             .map_err(|e| Error::from_reason(format!("socket flush error: {e}")))?;
     }
