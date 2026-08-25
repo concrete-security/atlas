@@ -25,6 +25,14 @@ class AtlsNetworkStream(httpcore.NetworkStream):
     Rust owns the TLS session. This stream proxies read/write to it.
     ``start_tls`` is a no-op because TLS was already established by Rust.
 
+    **Re-attestation**: when the connection's attestation evidence is older
+    than the policy's ``reattestation_interval_secs`` (default 300; 0
+    disables), the Rust side transparently re-attests it in-band at the next
+    message boundary (the first ``write`` of a new request). On failure the
+    connection is closed and ``write`` raises
+    :class:`atlas.ReattestationError` (fail closed); retrying the request
+    gets a fresh, fully attested connection from the pool.
+
     **Limitation**: ``timeout`` parameters on ``read``/``write`` are not
     forwarded to the Rust side. The Rust tokio runtime manages its own I/O
     scheduling. httpx-level timeouts (e.g. ``httpx.Timeout``) will not be

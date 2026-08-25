@@ -4,7 +4,7 @@ import os
 from . import httpx
 from .policy import dev_policy, dstack_tdx_policy, merge_with_default_app_compose
 from .utils import _get_default_logger
-from .verifiers.errors import AtlsVerificationError
+from .verifiers.errors import AtlsVerificationError, ReattestationError
 
 logger = _get_default_logger()
 
@@ -20,4 +20,5 @@ __all__ = [
     "dev_policy",
     "merge_with_default_app_compose",
     "AtlsVerificationError",
+    "ReattestationError",
 ]

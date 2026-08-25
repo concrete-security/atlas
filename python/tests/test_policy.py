@@ -60,6 +60,27 @@ class TestDstackTdxPolicy:
         )
         assert policy["pccs_url"] == "https://custom-pccs.example.com"
 
+    def test_dstack_tdx_policy_omits_reattestation_interval_by_default(self):
+        """Omitting the kwarg leaves the key absent (Rust core default: 300s)."""
+        policy = dstack_tdx_policy(disable_runtime_verification=True)
+        assert "reattestation_interval_secs" not in policy
+
+    def test_dstack_tdx_policy_with_reattestation_interval(self):
+        """An explicit interval is included in the policy dict."""
+        policy = dstack_tdx_policy(
+            disable_runtime_verification=True,
+            reattestation_interval_secs=600,
+        )
+        assert policy["reattestation_interval_secs"] == 600
+
+    def test_dstack_tdx_policy_reattestation_interval_zero_disables(self):
+        """0 is passed through explicitly to disable re-attestation."""
+        policy = dstack_tdx_policy(
+            disable_runtime_verification=True,
+            reattestation_interval_secs=0,
+        )
+        assert policy["reattestation_interval_secs"] == 0
+
     def test_bootchain_without_os_image_hash_raises(self, bootchain):
         """Test that providing bootchain without os_image_hash raises ValueError."""
         with pytest.raises(ValueError, match="must be provided together"):

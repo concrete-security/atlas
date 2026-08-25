@@ -67,3 +67,12 @@ class TestModuleInit:
         assert hasattr(atlas, "dev_policy")
         assert hasattr(atlas, "merge_with_default_app_compose")
         assert hasattr(atlas, "AtlsVerificationError")
+        assert hasattr(atlas, "ReattestationError")
+
+    def test_reattestation_error_importable_from_errors_module(self):
+        """ReattestationError is re-exported next to AtlsVerificationError."""
+        from atlas import ReattestationError as top_level
+        from atlas.verifiers.errors import ReattestationError
+
+        assert top_level is ReattestationError
+        assert issubclass(ReattestationError, Exception)
