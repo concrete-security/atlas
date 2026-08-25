@@ -91,6 +91,42 @@ struct QuoteEndpointResponse {
     quote: GetQuoteResponse,
 }
 
+/// How to match the session certificate against "New TLS Certificate" events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CertEventMatch {
+    /// Require the most recent certificate event to match.
+    ///
+    /// Used for the initial handshake: the connection must present the
+    /// attester's current certificate.
+    Latest,
+    /// Accept any certificate event that matches.
+    ///
+    /// Used for re-attestation: the session certificate stays valid for the
+    /// connection lifetime even if the attester has since rotated to a new
+    /// certificate (rotation appends a new event to the append-only log).
+    #[cfg_attr(not(test), allow(dead_code))] // constructed by re-attestation (next commit)
+    Any,
+}
+
+/// Decode a "New TLS Certificate" event payload into the cert hash string.
+///
+/// The payload is the hex encoding of the UTF-8 hex digest of the certificate.
+fn decode_cert_event_payload(event: &EventLog) -> Result<String, AtlsVerificationError> {
+    let decoded = hex::decode(&event.event_payload).map_err(|e| {
+        AtlsVerificationError::EventLogParse(format!(
+            "failed to hex-decode certificate event payload: {}",
+            e
+        ))
+    })?;
+
+    String::from_utf8(decoded).map_err(|e| {
+        AtlsVerificationError::EventLogParse(format!(
+            "certificate event payload is not valid UTF-8: {}",
+            e
+        ))
+    })
+}
+
 /// DstackTDXVerifier performs TDX attestation verification for dstack deployments.
 ///
 /// This verifier implements the full verification flow:
@@ -151,17 +187,8 @@ impl DstackTDXVerifier {
 
         let cache_key = (pccs_url.to_string(), fmspc.clone(), ca);
 
-        // Get current time - platform specific (needed for cache TTL and verification)
-        #[cfg(not(target_arch = "wasm32"))]
-        let now_secs = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|e| {
-                AtlsVerificationError::Quote(format!("Failed to get current time: {}", e))
-            })?
-            .as_secs();
-
-        #[cfg(target_arch = "wasm32")]
-        let now_secs = (js_sys::Date::now() / 1000.0) as u64;
+        // Get current time (needed for cache TTL and verification)
+        let now_secs = crate::time::now_secs();
 
         // Try to get collateral from the process-global cache (with TTL check)
         let cached = if self.config.cache_collateral {
@@ -301,43 +328,55 @@ impl DstackTDXVerifier {
 
     /// Verify certificate is in event log (using dstack-sdk EventLog type).
     ///
+    /// `mode` selects whether only the latest certificate event may match
+    /// (initial handshake) or any certificate event (re-attestation).
+    ///
     /// Returns Ok(true) if cert matches, Ok(false) if cert not found,
     /// or Err if parsing fails.
     fn verify_cert_in_eventlog(
         &self,
         cert_der: &[u8],
         events: &[EventLog],
+        mode: CertEventMatch,
     ) -> Result<bool, AtlsVerificationError> {
         let cert_hash = hex::encode(Sha256::digest(cert_der));
         debug!("Certificate hash: {}", cert_hash);
 
-        // Find last "New TLS Certificate" event
-        let cert_event = events.iter().rfind(|e| e.event == "New TLS Certificate");
+        match mode {
+            CertEventMatch::Latest => {
+                // Find last "New TLS Certificate" event
+                let cert_event = events.iter().rfind(|e| e.event == "New TLS Certificate");
 
-        match cert_event {
-            Some(event) => {
-                // event_payload is hex-encoded, decode it to get the cert hash string
-                let decoded = hex::decode(&event.event_payload).map_err(|e| {
-                    AtlsVerificationError::EventLogParse(format!(
-                        "failed to hex-decode certificate event payload: {}",
-                        e
-                    ))
-                })?;
-
-                let eventlog_cert_hash = String::from_utf8(decoded).map_err(|e| {
-                    AtlsVerificationError::EventLogParse(format!(
-                        "certificate event payload is not valid UTF-8: {}",
-                        e
-                    ))
-                })?;
-
-                debug!("Certificate hash from event log: {}", eventlog_cert_hash);
-                let cert_match = eventlog_cert_hash == cert_hash;
-                debug!("Certificate hash match: {}", cert_match);
-                Ok(cert_match)
+                match cert_event {
+                    Some(event) => {
+                        let eventlog_cert_hash = decode_cert_event_payload(event)?;
+                        debug!("Certificate hash from event log: {}", eventlog_cert_hash);
+                        let cert_match = eventlog_cert_hash == cert_hash;
+                        debug!("Certificate hash match: {}", cert_match);
+                        Ok(cert_match)
+                    }
+                    None => {
+                        debug!("No 'New TLS Certificate' event found in event log");
+                        Ok(false)
+                    }
+                }
             }
-            None => {
-                debug!("No 'New TLS Certificate' event found in event log");
+            CertEventMatch::Any => {
+                let mut found_any_event = false;
+                for event in events.iter().filter(|e| e.event == "New TLS Certificate") {
+                    found_any_event = true;
+                    // Malformed payloads stay strict errors in both modes.
+                    let eventlog_cert_hash = decode_cert_event_payload(event)?;
+                    if eventlog_cert_hash == cert_hash {
+                        debug!("Certificate hash matched an event log entry");
+                        return Ok(true);
+                    }
+                }
+                if !found_any_event {
+                    debug!("No 'New TLS Certificate' event found in event log");
+                } else {
+                    debug!("No certificate event matched the session certificate");
+                }
                 Ok(false)
             }
         }
@@ -522,15 +561,20 @@ impl DstackTDXVerifier {
         debug!("Report data verification successful");
         Ok(())
     }
-}
 
-impl AtlsVerifier for DstackTDXVerifier {
-    async fn verify<S>(
+    /// Full verification: fetch a fresh quote in-band over `stream`, then
+    /// appraise it.
+    ///
+    /// `cert_match` selects how the session certificate is matched against
+    /// the event log (`Latest` for initial handshakes, `Any` for
+    /// re-attestation of an established session).
+    pub(crate) async fn verify_with_mode<S>(
         &self,
         stream: &mut S,
         peer_cert: &[u8],
         session_ekm: &[u8],
         hostname: &str,
+        cert_match: CertEventMatch,
     ) -> Result<Report, AtlsVerificationError>
     where
         S: AsyncByteStream,
@@ -539,10 +583,26 @@ impl AtlsVerifier for DstackTDXVerifier {
 
         // 1. Generate nonce and get quote via HTTP POST to /tdx_quote
         let nonce: [u8; 32] = rand::random();
-
-        // Get quote via HTTP POST to /tdx_quote
         let quote_response = get_quote_over_http(stream, &nonce, hostname).await?;
 
+        self.appraise(&quote_response, &nonce, peer_cert, session_ekm, cert_match)
+            .await
+    }
+
+    /// Appraise a quote response: event log decode, certificate binding,
+    /// DCAP verification, report data (nonce + EKM), RTMR replay, and —
+    /// unless disabled — bootchain, app compose, and OS image checks.
+    ///
+    /// Every check runs in full on each call; re-attestation repeats the
+    /// exact appraisal performed at connect time.
+    async fn appraise(
+        &self,
+        quote_response: &GetQuoteResponse,
+        nonce: &[u8; 32],
+        peer_cert: &[u8],
+        session_ekm: &[u8],
+        cert_match: CertEventMatch,
+    ) -> Result<Report, AtlsVerificationError> {
         // 2. Parse event log using dstack-sdk-types
         debug!("Parsing event log");
         let events = quote_response
@@ -552,7 +612,7 @@ impl AtlsVerifier for DstackTDXVerifier {
 
         // 3. Verify certificate in event log
         debug!("Verifying certificate in event log");
-        let cert_in_eventlog = self.verify_cert_in_eventlog(peer_cert, &events)?;
+        let cert_in_eventlog = self.verify_cert_in_eventlog(peer_cert, &events, cert_match)?;
         if !cert_in_eventlog {
             return Err(AtlsVerificationError::CertificateNotInEventLog);
         }
@@ -571,10 +631,10 @@ impl AtlsVerifier for DstackTDXVerifier {
         let session_ekm: &[u8; 32] = session_ekm.try_into().map_err(|_| {
             AtlsVerificationError::Configuration("session_ekm must be exactly 32 bytes".into())
         })?;
-        self.verify_report_data(&nonce, session_ekm, &verified_report)?;
+        self.verify_report_data(nonce, session_ekm, &verified_report)?;
 
         // 6. Verify RTMR replay against the verified report
-        self.verify_rtmr_replay(&quote_response, &verified_report)?;
+        self.verify_rtmr_replay(quote_response, &verified_report)?;
 
         // Skip remaining checks if runtime verification is disabled
         if self.config.disable_runtime_verification {
@@ -593,6 +653,28 @@ impl AtlsVerifier for DstackTDXVerifier {
 
         debug!("DStack TDX verification complete");
         Ok(Report::Tdx(verified_report))
+    }
+}
+
+impl AtlsVerifier for DstackTDXVerifier {
+    async fn verify<S>(
+        &self,
+        stream: &mut S,
+        peer_cert: &[u8],
+        session_ekm: &[u8],
+        hostname: &str,
+    ) -> Result<Report, AtlsVerificationError>
+    where
+        S: AsyncByteStream,
+    {
+        self.verify_with_mode(
+            stream,
+            peer_cert,
+            session_ekm,
+            hostname,
+            CertEventMatch::Latest,
+        )
+        .await
     }
 }
 
@@ -713,6 +795,83 @@ mod tests {
             qe_identity: String::new(),
             qe_identity_signature: Vec::new(),
             pck_certificate_chain: None,
+        }
+    }
+
+    fn cert_event(cert_der: &[u8]) -> EventLog {
+        let cert_hash = hex::encode(Sha256::digest(cert_der));
+        EventLog {
+            imr: 3,
+            event_type: 0x0800_0001,
+            digest: String::new(),
+            event: "New TLS Certificate".to_string(),
+            event_payload: hex::encode(cert_hash.as_bytes()),
+        }
+    }
+
+    fn test_verifier() -> DstackTDXVerifier {
+        DstackTDXVerifier::builder()
+            .disable_runtime_verification()
+            .build()
+            .unwrap()
+    }
+
+    #[test]
+    fn test_cert_event_match_latest_requires_most_recent_event() {
+        let verifier = test_verifier();
+        let session_cert = b"session-cert-der";
+        let rotated_cert = b"rotated-cert-der";
+        // The session cert was logged first; a rotation appended a newer event.
+        let events = vec![cert_event(session_cert), cert_event(rotated_cert)];
+
+        assert!(!verifier
+            .verify_cert_in_eventlog(session_cert, &events, CertEventMatch::Latest)
+            .unwrap());
+        assert!(verifier
+            .verify_cert_in_eventlog(rotated_cert, &events, CertEventMatch::Latest)
+            .unwrap());
+    }
+
+    #[test]
+    fn test_cert_event_match_any_accepts_earlier_session_cert() {
+        let verifier = test_verifier();
+        let session_cert = b"session-cert-der";
+        let rotated_cert = b"rotated-cert-der";
+        let events = vec![cert_event(session_cert), cert_event(rotated_cert)];
+
+        assert!(verifier
+            .verify_cert_in_eventlog(session_cert, &events, CertEventMatch::Any)
+            .unwrap());
+        // A cert that was never logged still fails.
+        assert!(!verifier
+            .verify_cert_in_eventlog(b"unknown-cert", &events, CertEventMatch::Any)
+            .unwrap());
+    }
+
+    #[test]
+    fn test_cert_event_match_without_cert_events() {
+        let verifier = test_verifier();
+        let events: Vec<EventLog> = Vec::new();
+        assert!(!verifier
+            .verify_cert_in_eventlog(b"cert", &events, CertEventMatch::Latest)
+            .unwrap());
+        assert!(!verifier
+            .verify_cert_in_eventlog(b"cert", &events, CertEventMatch::Any)
+            .unwrap());
+    }
+
+    #[test]
+    fn test_cert_event_malformed_payload_errors_in_both_modes() {
+        let verifier = test_verifier();
+        let mut event = cert_event(b"cert");
+        event.event_payload = "not-hex!".to_string();
+        let events = vec![event];
+
+        for mode in [CertEventMatch::Latest, CertEventMatch::Any] {
+            let err = verifier
+                .verify_cert_in_eventlog(b"cert", &events, mode)
+                .unwrap_err();
+            assert!(matches!(err, AtlsVerificationError::EventLogParse(_)));
         }
     }
 
