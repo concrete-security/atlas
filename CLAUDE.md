@@ -43,7 +43,8 @@ make build-python
 
 ## Repo map (look here first)
 
-- `core/src/connect.rs`: high-level entrypoint `atls_connect(...)`.
+- `core/src/connect.rs`: high-level entrypoints `atls_connect(...)`, `atls_connect_with_reattester(...)`.
+- `core/src/reattest.rs`: `Reattester` for periodic in-band re-attestation (policy: `reattestation_interval_secs`, default 300, 0 disables).
 - `core/src/verifier.rs`: verifier traits and runtime dispatch enums.
 - `core/src/policy.rs`: serde-tagged `Policy` enum.
 - `core/src/dstack/`: Intel TDX verifier implementation.
