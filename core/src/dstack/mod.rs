@@ -12,4 +12,5 @@ mod verifier;
 pub use config::{DstackTDXVerifierBuilder, DstackTDXVerifierConfig};
 pub use default_app_compose::{get_default_app_compose, merge_with_default_app_compose};
 pub use policy::DstackTdxPolicy;
+pub(crate) use verifier::CertEventMatch;
 pub use verifier::DstackTDXVerifier;

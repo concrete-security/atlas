@@ -104,7 +104,6 @@ pub(crate) enum CertEventMatch {
     /// Used for re-attestation: the session certificate stays valid for the
     /// connection lifetime even if the attester has since rotated to a new
     /// certificate (rotation appends a new event to the append-only log).
-    #[cfg_attr(not(test), allow(dead_code))] // constructed by re-attestation (next commit)
     Any,
 }
 
@@ -586,6 +585,32 @@ impl DstackTDXVerifier {
         let quote_response = get_quote_over_http(stream, &nonce, hostname).await?;
 
         self.appraise(&quote_response, &nonce, peer_cert, session_ekm, cert_match)
+            .await
+    }
+
+    /// Configured re-attestation interval in seconds (0 = disabled).
+    pub(crate) fn reattestation_interval_secs(&self) -> u64 {
+        self.config.reattestation_interval_secs
+    }
+
+    /// Appraise a `/tdx_quote` response body (raw JSON bytes) fetched by the
+    /// caller over its own transport (e.g. an HTTP client owning the stream).
+    ///
+    /// The caller supplies the `nonce` it sent with the quote request; the
+    /// appraisal enforces `report_data == SHA512(nonce || session_ekm)`.
+    pub(crate) async fn appraise_quote_body(
+        &self,
+        body: &[u8],
+        nonce: &[u8; 32],
+        peer_cert: &[u8],
+        session_ekm: &[u8],
+        cert_match: CertEventMatch,
+    ) -> Result<Report, AtlsVerificationError> {
+        let response: QuoteEndpointResponse = serde_json::from_slice(body).map_err(|e| {
+            AtlsVerificationError::Quote(format!("Failed to parse /tdx_quote response: {}", e))
+        })?;
+
+        self.appraise(&response.quote, nonce, peer_cert, session_ekm, cert_match)
             .await
     }
 

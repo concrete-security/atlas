@@ -185,12 +185,14 @@ Policy fields vary by verifier implementation. The `Policy` enum wraps implement
 | `app_compose` | Expected application configuration | Yes (unless disabled) |
 | `allowed_tcb_status` | Acceptable TCB statuses (e.g., `["UpToDate"]`) | Yes |
 | `grace_period` | Grace period (seconds) for `OutOfDate` TCB status. `0` means no grace window. | No |
+| `reattestation_interval_secs` | Max age (seconds) of attestation evidence before transparent re-attestation. Default: `300`. `0` disables re-attestation; non-zero values below `30` are rejected. | No |
 | `disable_runtime_verification` | Skip runtime checks (default: false) | No |
 | `pccs_url` | Intel PCCS URL (defaults to Phala's) | No |
 | `cache_collateral` | Cache Intel collateral (default: false) | No |
 
 Time-based TCB checks:
 - `grace_period` applies only when the TCB status is `OutOfDate` and requires `OutOfDate` in `allowed_tcb_status`. A value of `0` means no grace window.
+- `reattestation_interval_secs` bounds how old attestation evidence may be when the connection is used; see [Periodic Re-attestation](#periodic-re-attestation).
 
 ```rust
 use atlas_rs::{Policy, DstackTdxPolicy, ExpectedBootchain};
@@ -275,6 +277,45 @@ Since the EKM is derived from the TLS session's master secret (unique per sessio
 - **Standards-based** - Uses RFC 9266 channel binding for TLS 1.3
 - **Defense-in-depth** - Protects against key compromise scenarios
 
+### Periodic Re-attestation
+
+A single attestation only proves the workload state at connect time. To bound
+the window in which an attacker could modify workload state unnoticed, Atlas
+re-attests established connections during their lifetime, controlled by
+`reattestation_interval_secs` (default 300 seconds; `0` disables it).
+
+**Semantics:** the interval is the maximum age of attestation evidence *at the
+moment the connection is used*. There are no background timers: staleness is
+checked lazily at safe message boundaries (no request/response in flight), so
+a connection that sat idle for an hour is re-verified right before its next
+request. A single long-running response (e.g. a streaming completion) cannot
+be interrupted mid-flight; it is re-checked at the next boundary.
+
+**How it works:** re-attestation repeats the full verification pipeline —
+`/tdx_quote` exchange, DCAP verification, RTMR replay, bootchain, app compose,
+and OS image checks — with a **fresh nonce** bound to the **same session EKM**
+(`report_data = SHA512(nonce || session_ekm)`). The fresh nonce guarantees
+evidence freshness; the EKM (a secret that never leaves the TLS endpoints)
+binds the fresh evidence to this specific live session. Each cycle therefore
+carries the same security weight as the initial attestation. The one
+difference: the session certificate may match *any* `New TLS Certificate`
+event in the log rather than only the latest, because a mid-session server
+certificate rotation appends a new event while the session certificate stays
+valid (the log is append-only and integrity-protected by RTMR replay).
+
+**Failure is fail-closed:** a failed re-attestation returns
+`AtlsVerificationError::Reattestation`, the evidence age is not refreshed, and
+the connection must not be used further. Language bindings tear the connection
+down; pooled clients transparently reconnect, which performs a full fresh
+attestation.
+
+**Rust API:** use `atls_connect_with_reattester` to obtain a `Reattester`
+handle alongside the stream, then call `reattester.is_due()` /
+`reattester.reattest(&mut stream)` at your protocol's message boundaries. For
+transports that own the stream (e.g. an HTTP client), use
+`reattester.begin()` to get the `/tdx_quote` request parameters and
+`reattester.finish(&request, &response_body)` to appraise the response.
+
 ## Protocol Specification
 
 ### Step 1: TLS Handshake
@@ -330,6 +371,15 @@ Server responds:
 3. Recompute RTMR3 by replaying every event log entry in order and ensure the final digest matches the quote
 4. During that replay, locate the TLS key binding event (contains the certificate pubkey hash) to prove the attested workload owns the negotiated TLS key
 5. Verify bootchain (MRTD, RTMR0-2), app compose hash, and OS image hash against policy
+
+### Step 4: Re-attestation (periodic)
+
+While the connection stays open, the client repeats the Step 2 exchange and
+Step 3 verification over the live session with a fresh nonce whenever the
+evidence age exceeds `reattestation_interval_secs` at a message boundary. The
+session certificate check accepts any matching `New TLS Certificate` event
+(not only the latest) to tolerate mid-session certificate rotation on the
+attester.
 
 ## TCB Status Values
 

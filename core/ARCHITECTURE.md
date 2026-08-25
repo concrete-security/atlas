@@ -146,19 +146,43 @@ When `atls_connect()` is called:
    - Verify measurements (bootchain, app config, OS image)
 5. **Return** - Return `(TlsStream, Report)` for continued communication
 
+### Re-attestation Flow
+
+`atls_connect_with_reattester()` additionally returns a `Reattester`
+(`reattest.rs`) that retains the verifier, session peer certificate, and
+session EKM. At safe message boundaries, callers check `is_due()` (evidence
+age vs. the policy's `reattestation_interval_secs`; 0 disables) and call
+`reattest(&mut stream)`, which re-runs the full verify pipeline with a fresh
+nonce bound to the same session EKM. For transports that own the stream (e.g.
+hyper in the wasm binding), `begin()`/`finish()` split the exchange: the
+caller sends the `/tdx_quote` request itself and hands the response body back
+for appraisal.
+
+The only difference from initial verification is the certificate/event-log
+check (`CertEventMatch` in `dstack/verifier.rs`): initial handshakes require
+the *latest* `New TLS Certificate` event to match (`Latest`), while
+re-attestation accepts *any* matching event (`Any`) because a mid-session
+certificate rotation on the attester appends a new event to the append-only
+log while the session certificate stays valid. The log is
+integrity-protected by RTMR replay in both modes. Failures wrap in
+`AtlsVerificationError::Reattestation` and are fail-closed: the evidence age
+is not refreshed and the connection must not be used further.
+
 ## Module Structure
 
 ```
 core/src/
 ├── lib.rs              # Public API re-exports
-├── connect.rs          # atls_connect(), tls_handshake()
+├── connect.rs          # atls_connect(), atls_connect_with_reattester(), tls_handshake()
+├── reattest.rs         # Reattester, ReattestRequest (periodic re-attestation)
 ├── verifier.rs         # AtlsVerifier trait, Report/Verifier enums
 ├── policy.rs           # Policy enum
 ├── error.rs            # AtlsVerificationError
+├── time.rs             # Platform time helper (now_secs)
 │
 ├── dstack/             # DStack TDX implementation
 │   ├── mod.rs          # Re-exports
-│   ├── verifier.rs     # DstackTDXVerifier (AtlsVerifier impl)
+│   ├── verifier.rs     # DstackTDXVerifier (AtlsVerifier impl), CertEventMatch
 │   ├── config.rs       # DstackTDXVerifierConfig, Builder
 │   ├── policy.rs       # DstackTdxPolicy (IntoVerifier impl)
 │   └── compose_hash.rs # Deterministic app config hashing
