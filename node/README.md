@@ -190,6 +190,23 @@ const fetch = createAtlsFetch({
 })
 ```
 
+### Periodic Re-attestation
+
+Connections are transparently re-attested while they stay in use, controlled
+by the policy's `reattestation_interval_secs` (default `300`; set `0` to
+disable completely, non-zero values below `30` are rejected):
+
+- **Bun**: reused pooled connections re-run the `/tdx_quote` exchange in-band
+  when their evidence is older than the interval, before the request is sent.
+- **Node**: pooled `https.Agent` sockets with expired evidence are retired and
+  the next request reconnects, which performs a full fresh attestation.
+
+Either way, no request is dispatched on a connection whose attestation
+evidence is older than the interval. Failures are fail-closed: the connection
+is destroyed and a fresh, fully attested one replaces it. `onAttestation`
+fires again on every re-attestation or reconnect, and `response.attestation`
+always reflects the evidence backing that request.
+
 For complete policy field descriptions, verification flow, and computing bootchain measurements, see:
 - [core/README.md#policy-configuration](../core/README.md#policy-configuration)
 - [core/BOOTCHAIN-VERIFICATION.md](../core/BOOTCHAIN-VERIFICATION.md)
@@ -241,6 +258,9 @@ Node.js bindings connect directly to TEE endpoints via TCP (no proxy required):
 2. **Quote Retrieval** - Fetches attestation quote from the server
 3. **Verification** - Validates quote against policy using Intel DCAP
 4. **Request Execution** - Proceeds with HTTP request over verified channel
+5. **Re-attestation** - Long-lived connections are re-verified whenever their
+   evidence is older than `reattestation_interval_secs` (see "Periodic
+   Re-attestation")
 
 All verification happens automatically. The attestation result is exposed on every response for audit logging or policy enforcement.
 
