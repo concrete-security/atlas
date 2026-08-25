@@ -12,7 +12,8 @@ mod hyper_io;
 
 use async_io_stream::IoStream;
 use atlas_rs::{
-    atls_connect, dstack::merge_with_default_app_compose, AsyncWriteExt, Policy, TlsStream,
+    atls_connect, atls_connect_with_reattester, dstack::merge_with_default_app_compose,
+    AsyncWriteExt, Policy, ReattestRequest, Reattester, Report, TlsStream,
 };
 use bytes::Bytes;
 use futures::io::{ReadHalf, WriteHalf};
@@ -99,11 +100,29 @@ pub struct AttestationSummary {
     pub advisory_ids: Vec<String>,
 }
 
+fn summarize(report: &Report) -> AttestationSummary {
+    match report {
+        Report::Tdx(verified) => AttestationSummary {
+            trusted: true,
+            tee_type: "Tdx".to_string(),
+            tcb_status: verified.status.clone(),
+            advisory_ids: verified.advisory_ids.clone(),
+        },
+    }
+}
+
 /// An attested TLS stream over a WebSocket connection.
 ///
 /// Provides a native `ReadableStream` for response data and a `send` method
 /// for writing requests. This design allows zero-copy response streaming
 /// while keeping the write path simple.
+///
+/// Re-attestation is not supported on this low-level stream: the pull-based
+/// `ReadableStream` may hold a pending read, and the caller owns the
+/// application protocol framing, so an in-band quote exchange could
+/// interleave with application traffic. Use [`AtlsHttp`] for long-lived
+/// connections with transparent re-attestation, or reconnect periodically
+/// (every connect performs a full attestation).
 #[wasm_bindgen]
 pub struct AttestedStream {
     writer: Rc<RefCell<Option<WriteHalf<TlsStream<WsIo>>>>>,
@@ -153,18 +172,9 @@ impl AttestedStream {
 
         let readable = create_readable_stream(reader);
 
-        let attestation = match &report {
-            atlas_rs::Report::Tdx(verified) => AttestationSummary {
-                trusted: true,
-                tee_type: "Tdx".to_string(),
-                tcb_status: verified.status.clone(),
-                advisory_ids: verified.advisory_ids.clone(),
-            },
-        };
-
         Ok(AttestedStream {
             writer: Rc::new(RefCell::new(Some(writer))),
-            attestation,
+            attestation: summarize(&report),
             readable,
         })
     }
@@ -235,7 +245,12 @@ pub struct AtlsHttp {
     /// The hyper HTTP/1.1 sender - can make multiple requests on the same connection.
     /// Stored as Option to allow detecting when the connection is closed.
     sender: Rc<RefCell<Option<SendRequest<Full<Bytes>>>>>,
-    attestation: AttestationSummary,
+    /// Latest attestation result; refreshed by `reattest()`.
+    attestation: RefCell<AttestationSummary>,
+    /// Re-attestation handle retaining the verifier, session peer
+    /// certificate, and session EKM (captured before hyper consumed the
+    /// stream — the raw stream is unreachable afterwards).
+    reattester: Rc<Reattester>,
 }
 
 #[wasm_bindgen]
@@ -263,7 +278,7 @@ impl AtlsHttp {
             .await
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
 
-        let (tls, report) = atls_connect(
+        let (tls, report, reattester) = atls_connect_with_reattester(
             ws_stream.into_io(),
             server_name,
             policy,
@@ -272,14 +287,7 @@ impl AtlsHttp {
         .await
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
 
-        let attestation = match &report {
-            atlas_rs::Report::Tdx(verified) => AttestationSummary {
-                trusted: true,
-                tee_type: "Tdx".to_string(),
-                tcb_status: verified.status.clone(),
-                advisory_ids: verified.advisory_ids.clone(),
-            },
-        };
+        let attestation = summarize(&report);
 
         // Wrap TLS stream for hyper compatibility
         let io = HyperIo::new(tls);
@@ -302,15 +310,98 @@ impl AtlsHttp {
 
         Ok(AtlsHttp {
             sender: Rc::new(RefCell::new(Some(sender))),
-            attestation,
+            attestation: RefCell::new(attestation),
+            reattester: Rc::new(reattester),
         })
     }
 
-    /// Get attestation result.
+    /// Get the latest attestation result (refreshed by `reattest()`).
     #[wasm_bindgen(js_name = attestation)]
     pub fn attestation(&self) -> Result<JsValue, JsValue> {
-        serde_wasm_bindgen::to_value(&self.attestation)
+        serde_wasm_bindgen::to_value(&*self.attestation.borrow())
             .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// Whether the connection's attestation evidence is older than the
+    /// policy's `reattestation_interval_secs`.
+    ///
+    /// Always false when re-attestation is disabled (interval 0).
+    #[wasm_bindgen(js_name = isReattestationDue)]
+    pub fn is_reattestation_due(&self) -> bool {
+        self.reattester.is_due()
+    }
+
+    /// Re-attest the connection over the live HTTP/1.1 session.
+    ///
+    /// Sends a `POST /tdx_quote` request with a fresh nonce through the same
+    /// hyper connection and runs the full verification pipeline on the
+    /// response (`report_data = SHA512(nonce || session_ekm)` binds it to
+    /// this session). The connection must be idle — check `isReady()` first,
+    /// like `fetch()`.
+    ///
+    /// On success the stored attestation is refreshed and returned. On
+    /// failure the evidence stays stale and the connection must be closed
+    /// and replaced (fail closed); a fresh connect performs a full
+    /// attestation.
+    #[wasm_bindgen(js_name = reattest)]
+    pub async fn reattest(&self) -> Result<JsValue, JsValue> {
+        let request = self.reattester.begin();
+        let body_json = request.body_json();
+
+        // Mirrors fetch(): the sender borrow is held for the exchange, so a
+        // concurrent fetch()/reattest() is serialized by the JS caller via
+        // isReady(), exactly like concurrent fetch()+fetch().
+        let mut sender_guard = self.sender.borrow_mut();
+        let sender = sender_guard
+            .as_mut()
+            .ok_or_else(|| JsValue::from_str("connection closed"))?;
+
+        if !sender.is_ready() {
+            return Err(JsValue::from_str(
+                "connection busy - wait for previous response to complete",
+            ));
+        }
+
+        let http_request = Request::builder()
+            .method(ReattestRequest::method())
+            .uri(ReattestRequest::path())
+            .header("Host", self.reattester.server_name())
+            .header("Content-Type", ReattestRequest::content_type())
+            .header("Content-Length", body_json.len().to_string())
+            .body(Full::new(Bytes::from(body_json)))
+            .map_err(|e| JsValue::from_str(&format!("Failed to build request: {e}")))?;
+
+        let response = sender
+            .send_request(http_request)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("reattestation failed: {e}")))?;
+
+        let status = response.status();
+        if status != hyper::StatusCode::OK {
+            return Err(JsValue::from_str(&format!(
+                "reattestation failed: /tdx_quote returned HTTP {status}"
+            )));
+        }
+
+        // Collect the response body (hyper strips chunked framing).
+        let body_bytes = response
+            .into_body()
+            .collect()
+            .await
+            .map_err(|e| JsValue::from_str(&format!("reattestation failed: {e}")))?
+            .to_bytes();
+        drop(sender_guard);
+
+        // No RefCell borrow is held across this await (Reattester is &self).
+        let report = self
+            .reattester
+            .finish(&request, &body_bytes)
+            .await
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+        let summary = summarize(&report);
+        *self.attestation.borrow_mut() = summary.clone();
+        serde_wasm_bindgen::to_value(&summary).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     /// Check if the connection is ready for another request.
