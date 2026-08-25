@@ -1,7 +1,7 @@
 //! DstackTDXVerifier implementation.
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::{Arc, RwLock};
+use std::sync::{OnceLock, RwLock};
 
 use dcap_qvl::collateral::get_collateral;
 use dcap_qvl::quote::Quote;
@@ -32,6 +32,59 @@ struct CachedCollateral {
 /// Default collateral cache TTL: 8 hours (in seconds).
 const COLLATERAL_CACHE_TTL_SECS: u64 = 8 * 3600;
 
+/// Process-global collateral cache shared by all verifier instances.
+///
+/// Keyed by (pccs_url, fmspc, ca) so different PCCS providers or platforms
+/// never collide. Entries expire after `COLLATERAL_CACHE_TTL_SECS`. Sharing
+/// across verifiers means reconnects and short-lived verifiers still benefit
+/// from previously fetched collateral (gated by `cache_collateral`).
+static COLLATERAL_CACHE: OnceLock<RwLock<HashMap<CollateralCacheKey, CachedCollateral>>> =
+    OnceLock::new();
+
+fn collateral_cache() -> &'static RwLock<HashMap<CollateralCacheKey, CachedCollateral>> {
+    COLLATERAL_CACHE.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+/// Look up collateral in the process-global cache, honoring the TTL.
+fn lookup_cached_collateral(key: &CollateralCacheKey, now_secs: u64) -> Option<QuoteCollateralV3> {
+    match collateral_cache().read() {
+        Ok(guard) => guard.get(key).and_then(|entry| {
+            if now_secs.saturating_sub(entry.cached_at_secs) < COLLATERAL_CACHE_TTL_SECS {
+                Some(entry.collateral.clone())
+            } else {
+                debug!(
+                    "Cached collateral expired for FMSPC={}, CA={}",
+                    key.1, key.2
+                );
+                None
+            }
+        }),
+        Err(_) => {
+            warn!("Collateral cache lock poisoned, treating as cache miss");
+            None
+        }
+    }
+}
+
+/// Store collateral in the process-global cache.
+fn store_cached_collateral(key: CollateralCacheKey, collateral: QuoteCollateralV3, now_secs: u64) {
+    match collateral_cache().write() {
+        Ok(mut guard) => {
+            debug!("Caching collateral for FMSPC={}, CA={}", key.1, key.2);
+            guard.insert(
+                key,
+                CachedCollateral {
+                    collateral,
+                    cached_at_secs: now_secs,
+                },
+            );
+        }
+        Err(_) => {
+            warn!("Collateral cache lock poisoned, skipping cache write");
+        }
+    }
+}
+
 /// Response from the /tdx_quote endpoint.
 #[derive(Debug, serde::Deserialize)]
 struct QuoteEndpointResponse {
@@ -50,8 +103,6 @@ struct QuoteEndpointResponse {
 /// 7. Verify OS image hash
 pub struct DstackTDXVerifier {
     config: DstackTDXVerifierConfig,
-    /// Cached collateral keyed by (pccs_url, fmspc, ca) with TTL expiration.
-    cached_collateral: Arc<RwLock<HashMap<CollateralCacheKey, CachedCollateral>>>,
 }
 
 impl DstackTDXVerifier {
@@ -70,10 +121,7 @@ impl DstackTDXVerifier {
                 ));
             }
         }
-        Ok(Self {
-            config,
-            cached_collateral: Arc::new(RwLock::new(HashMap::new())),
-        })
+        Ok(Self { config })
     }
 
     /// Create a new builder for DstackTDXVerifier.
@@ -93,11 +141,10 @@ impl DstackTDXVerifier {
         // Parse quote to get cache key components (FMSPC and CA)
         let parsed_quote = Quote::parse(quote)
             .map_err(|e| AtlsVerificationError::Quote(format!("Failed to parse quote: {}", e)))?;
-        let fmspc = hex::encode_upper(
-            parsed_quote
-                .fmspc()
-                .map_err(|e| AtlsVerificationError::Quote(format!("Failed to get FMSPC: {}", e)))?,
-        );
+        let fmspc =
+            hex::encode_upper(parsed_quote.fmspc().map_err(|e| {
+                AtlsVerificationError::Quote(format!("Failed to get FMSPC: {}", e))
+            })?);
         let ca = parsed_quote
             .ca()
             .map_err(|e| AtlsVerificationError::Quote(format!("Failed to get CA: {}", e)))?;
@@ -116,22 +163,9 @@ impl DstackTDXVerifier {
         #[cfg(target_arch = "wasm32")]
         let now_secs = (js_sys::Date::now() / 1000.0) as u64;
 
-        // Try to get collateral from cache (with TTL check)
+        // Try to get collateral from the process-global cache (with TTL check)
         let cached = if self.config.cache_collateral {
-            match self.cached_collateral.read() {
-                Ok(guard) => guard.get(&cache_key).and_then(|entry| {
-                    if now_secs.saturating_sub(entry.cached_at_secs) < COLLATERAL_CACHE_TTL_SECS {
-                        Some(entry.collateral.clone())
-                    } else {
-                        debug!("Cached collateral expired for FMSPC={}, CA={}", fmspc, ca);
-                        None
-                    }
-                }),
-                Err(_) => {
-                    warn!("Collateral cache lock poisoned, treating as cache miss");
-                    None
-                }
-            }
+            lookup_cached_collateral(&cache_key, now_secs)
         } else {
             None
         };
@@ -146,26 +180,13 @@ impl DstackTDXVerifier {
             }
             None => {
                 debug!("Fetching collateral from {}", pccs_url);
-                let c = get_collateral(pccs_url, quote)
-                    .await
-                    .map_err(|e| {
-                        AtlsVerificationError::Quote(format!("Failed to get collateral: {}", e))
-                    })?;
+                let c = get_collateral(pccs_url, quote).await.map_err(|e| {
+                    AtlsVerificationError::Quote(format!("Failed to get collateral: {}", e))
+                })?;
 
                 // Cache if enabled
                 if self.config.cache_collateral {
-                    match self.cached_collateral.write() {
-                        Ok(mut guard) => {
-                            debug!("Caching collateral for FMSPC={}, CA={}", fmspc, ca);
-                            guard.insert(cache_key, CachedCollateral {
-                                collateral: c.clone(),
-                                cached_at_secs: now_secs,
-                            });
-                        }
-                        Err(_) => {
-                            warn!("Collateral cache lock poisoned, skipping cache write");
-                        }
-                    }
+                    store_cached_collateral(cache_key, c.clone(), now_secs);
                 }
                 c
             }
@@ -174,8 +195,9 @@ impl DstackTDXVerifier {
         debug!("Collateral received, verifying DCAP quote");
 
         // Verify the quote
-        let report = verify(quote, &collateral, now_secs)
-            .map_err(|e| AtlsVerificationError::Quote(format!("DCAP verification failed: {}", e)))?;
+        let report = verify(quote, &collateral, now_secs).map_err(|e| {
+            AtlsVerificationError::Quote(format!("DCAP verification failed: {}", e))
+        })?;
 
         debug!("DCAP verification complete, TCB status: {}", report.status);
 
@@ -186,10 +208,7 @@ impl DstackTDXVerifier {
             .iter()
             .any(|s| s == &report.status);
 
-        debug!(
-            "TCB status '{}' allowed: {}",
-            report.status, tcb_allowed
-        );
+        debug!("TCB status '{}' allowed: {}", report.status, tcb_allowed);
 
         // If TCB status is OutOfDate, check it's within the grace period (if configured)
         // TODO: enforce_grace_period is currently implemented in a complex manner since
@@ -197,7 +216,13 @@ impl DstackTDXVerifier {
         // extract the TCB date from the quote and collateral manually, which is not ideal.
         // We should update enforce_grace_period when dcap-qvl adds TCB info to the VerifiedReport.
         // This would remove almost all the tdx/grace_period.rs code.
-        enforce_grace_period(&report, &parsed_quote, &collateral, self.config.grace_period, now_secs)?;
+        enforce_grace_period(
+            &report,
+            &parsed_quote,
+            &collateral,
+            self.config.grace_period,
+            now_secs,
+        )?;
 
         if !tcb_allowed {
             return Err(AtlsVerificationError::TcbStatusNotAllowed {
@@ -287,9 +312,7 @@ impl DstackTDXVerifier {
         debug!("Certificate hash: {}", cert_hash);
 
         // Find last "New TLS Certificate" event
-        let cert_event = events
-            .iter()
-            .rfind(|e| e.event == "New TLS Certificate");
+        let cert_event = events.iter().rfind(|e| e.event == "New TLS Certificate");
 
         match cert_event {
             Some(event) => {
@@ -344,11 +367,9 @@ impl DstackTDXVerifier {
         let event = events
             .iter()
             .find(|e| e.event == "compose-hash")
-            .ok_or_else(|| {
-                AtlsVerificationError::AppComposeHashMismatch {
-                    expected: expected.clone(),
-                    actual: "<not found in event log>".to_string(),
-                }
+            .ok_or_else(|| AtlsVerificationError::AppComposeHashMismatch {
+                expected: expected.clone(),
+                actual: "<not found in event log>".to_string(),
             })?;
 
         debug!("App compose hash from event log: {}", event.event_payload);
@@ -494,7 +515,6 @@ impl DstackTDXVerifier {
         debug!("Report data expected: {}", expected);
         debug!("Report data actual:   {}", actual);
 
-        
         if expected != actual {
             return Err(AtlsVerificationError::ReportDataMismatch { expected, actual });
         }
@@ -539,9 +559,9 @@ impl AtlsVerifier for DstackTDXVerifier {
 
         // 4. Verify DCAP quote using dcap-qvl directly
         debug!("Decoding quote for DCAP verification");
-        let quote_bytes = quote_response
-            .decode_quote()
-            .map_err(|e| AtlsVerificationError::Other(anyhow::anyhow!("Failed to decode quote: {}", e)))?;
+        let quote_bytes = quote_response.decode_quote().map_err(|e| {
+            AtlsVerificationError::Other(anyhow::anyhow!("Failed to decode quote: {}", e))
+        })?;
         debug!("Quote decoded ({} bytes)", quote_bytes.len());
 
         // Async quote verification - no blocking!
@@ -549,9 +569,7 @@ impl AtlsVerifier for DstackTDXVerifier {
 
         // 5. Verify report data
         let session_ekm: &[u8; 32] = session_ekm.try_into().map_err(|_| {
-            AtlsVerificationError::Configuration(
-                "session_ekm must be exactly 32 bytes".into(),
-            )
+            AtlsVerificationError::Configuration("session_ekm must be exactly 32 bytes".into())
         })?;
         self.verify_report_data(&nonce, session_ekm, &verified_report)?;
 
@@ -650,13 +668,9 @@ where
         .ok_or_else(|| AtlsVerificationError::Io("Invalid HTTP response".into()))?;
     let response_body = &response_buf[body_start..];
 
-    let response: QuoteEndpointResponse = serde_json::from_slice(response_body)
-        .map_err(|e| {
-            AtlsVerificationError::Quote(format!(
-                "Failed to parse /tdx_quote response: {}",
-                e
-            ))
-        })?;
+    let response: QuoteEndpointResponse = serde_json::from_slice(response_body).map_err(|e| {
+        AtlsVerificationError::Quote(format!("Failed to parse /tdx_quote response: {}", e))
+    })?;
 
     Ok(response.quote)
 }
@@ -681,4 +695,75 @@ fn parse_content_length(headers: &[u8]) -> Option<usize> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn collateral_with_marker(marker: &str) -> QuoteCollateralV3 {
+        QuoteCollateralV3 {
+            pck_crl_issuer_chain: marker.to_string(),
+            root_ca_crl: Vec::new(),
+            pck_crl: Vec::new(),
+            tcb_info_issuer_chain: String::new(),
+            tcb_info: String::new(),
+            tcb_info_signature: Vec::new(),
+            qe_identity_issuer_chain: String::new(),
+            qe_identity: String::new(),
+            qe_identity_signature: Vec::new(),
+            pck_certificate_chain: None,
+        }
+    }
+
+    // The cache is process-global and tests run in parallel, so every test
+    // uses its own unique keys.
+
+    #[test]
+    fn test_collateral_cache_hit_within_ttl() {
+        let key: CollateralCacheKey = (
+            "https://pccs.test/hit".to_string(),
+            "00906ED50000".to_string(),
+            "platform",
+        );
+        store_cached_collateral(key.clone(), collateral_with_marker("hit"), 1_000);
+        let hit = lookup_cached_collateral(&key, 1_000 + COLLATERAL_CACHE_TTL_SECS - 1);
+        assert_eq!(hit.map(|c| c.pck_crl_issuer_chain), Some("hit".to_string()));
+    }
+
+    #[test]
+    fn test_collateral_cache_key_isolation() {
+        let key_a: CollateralCacheKey = (
+            "https://pccs.test/iso-a".to_string(),
+            "00906ED50000".to_string(),
+            "platform",
+        );
+        let key_b: CollateralCacheKey = (
+            "https://pccs.test/iso-b".to_string(),
+            "00906ED50000".to_string(),
+            "platform",
+        );
+        store_cached_collateral(key_a, collateral_with_marker("a"), 1_000);
+        // Same FMSPC/CA but a different PCCS URL must never collide.
+        assert!(lookup_cached_collateral(&key_b, 1_000).is_none());
+    }
+
+    #[test]
+    fn test_collateral_cache_expires_after_ttl() {
+        let key: CollateralCacheKey = (
+            "https://pccs.test/ttl".to_string(),
+            "00906ED50000".to_string(),
+            "processor",
+        );
+        store_cached_collateral(key.clone(), collateral_with_marker("old"), 5_000);
+        assert!(lookup_cached_collateral(&key, 5_000 + COLLATERAL_CACHE_TTL_SECS).is_none());
+
+        // An expired entry can be refreshed in place.
+        store_cached_collateral(key.clone(), collateral_with_marker("new"), 9_000_000);
+        let refreshed = lookup_cached_collateral(&key, 9_000_000);
+        assert_eq!(
+            refreshed.map(|c| c.pck_crl_issuer_chain),
+            Some("new".to_string())
+        );
+    }
 }
