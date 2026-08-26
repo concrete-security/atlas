@@ -193,13 +193,23 @@ where
 
     debug!("Starting attestation verification");
     let verifier = policy.into_verifier()?;
+    // Anchor the evidence age at the moment verification starts (nonce
+    // issuance), not when it completes, so a slow exchange cannot overstate
+    // freshness.
+    let verified_at_millis = crate::time::mono_millis();
     let report = verifier
         .verify(&mut tls_stream, &peer_cert, &session_ekm, server_name)
         .await?;
 
     debug!("Attestation verification successful");
 
-    let reattester = Reattester::new(verifier, peer_cert, session_ekm, server_name.to_string());
+    let reattester = Reattester::new_at(
+        verifier,
+        peer_cert,
+        session_ekm,
+        server_name.to_string(),
+        verified_at_millis,
+    );
 
     Ok((tls_stream, report, reattester))
 }

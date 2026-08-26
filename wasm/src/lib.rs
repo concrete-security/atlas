@@ -393,9 +393,10 @@ impl AtlsHttp {
         drop(sender_guard);
 
         // No RefCell borrow is held across this await (Reattester is &self).
+        // `finish` consumes the request: this exchange cannot be replayed.
         let report = self
             .reattester
-            .finish(&request, &body_bytes)
+            .finish(request, &body_bytes)
             .await
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
 

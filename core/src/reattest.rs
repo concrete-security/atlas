@@ -75,15 +75,35 @@ pub struct Reattester {
 }
 
 impl Reattester {
-    /// Create a handle for a connection that was verified just now.
+    /// Create a handle for a session that was verified just now.
     ///
     /// The interval is read from the verifier's policy
     /// (`reattestation_interval_secs`; 0 disables re-attestation).
-    pub(crate) fn new(
+    ///
+    /// Public for custom integrations that perform the handshake and initial
+    /// verification manually (via [`tls_handshake`](crate::connect::tls_handshake)
+    /// and [`AtlsVerifier::verify`](crate::AtlsVerifier::verify)); prefer
+    /// [`atls_connect_with_reattester`](crate::atls_connect_with_reattester),
+    /// which constructs the handle with the exact session material.
+    pub fn new(
         verifier: Verifier,
         peer_cert: Vec<u8>,
         session_ekm: Vec<u8>,
         server_name: String,
+    ) -> Self {
+        let now = mono_millis();
+        Self::new_at(verifier, peer_cert, session_ekm, server_name, now)
+    }
+
+    /// Create a handle anchored at `verified_at_millis` — the moment the
+    /// initial verification *started* (nonce issuance), not when it
+    /// completed, so a slow exchange cannot overstate freshness.
+    pub(crate) fn new_at(
+        verifier: Verifier,
+        peer_cert: Vec<u8>,
+        session_ekm: Vec<u8>,
+        server_name: String,
+        verified_at_millis: u64,
     ) -> Self {
         let interval_secs = verifier.reattestation_interval_secs();
         Self {
@@ -92,7 +112,7 @@ impl Reattester {
             session_ekm,
             server_name,
             interval_secs,
-            verified_at_millis: AtomicU64::new(mono_millis()),
+            verified_at_millis: AtomicU64::new(verified_at_millis),
         }
     }
 
@@ -129,12 +149,14 @@ impl Reattester {
     /// Sends a `POST /tdx_quote` request with a fresh nonce on the live
     /// stream and runs the full verification pipeline on the response. The
     /// stream must be quiescent (see the type-level docs). On success the
-    /// evidence age resets; on failure it does not and the connection must
-    /// not be used further.
+    /// evidence age is anchored at the moment the exchange *started* (so a
+    /// slow exchange cannot overstate freshness); on failure it does not
+    /// change and the connection must not be used further.
     pub async fn reattest<S>(&self, stream: &mut S) -> Result<Report, AtlsVerificationError>
     where
         S: AsyncByteStream,
     {
+        let issued_at_millis = mono_millis();
         let result = self
             .verifier
             .reverify(
@@ -144,7 +166,7 @@ impl Reattester {
                 &self.server_name,
             )
             .await;
-        self.finish_result(result)
+        self.finish_result(result, issued_at_millis)
     }
 
     /// Begin a re-attestation exchange over a caller-owned transport.
@@ -152,10 +174,12 @@ impl Reattester {
     /// Use this when the raw stream is not directly accessible (e.g. it is
     /// owned by an HTTP client): send an HTTP request built from the
     /// returned [`ReattestRequest`] to the attester, then pass the response
-    /// body to [`finish`](Self::finish).
+    /// body to [`finish`](Self::finish). The request records its issuance
+    /// time; on success the evidence age is anchored there.
     pub fn begin(&self) -> ReattestRequest {
         ReattestRequest {
             nonce: rand::random(),
+            issued_at_millis: mono_millis(),
         }
     }
 
@@ -165,9 +189,14 @@ impl Reattester {
     /// Runs the full verification pipeline; the response must prove
     /// `report_data == SHA512(nonce || session_ekm)` for the nonce issued by
     /// `begin`. Same success/failure semantics as [`reattest`](Self::reattest).
+    ///
+    /// Consumes the request: a completed exchange cannot be replayed to
+    /// refresh the evidence age again, and the age is anchored at the
+    /// request's issuance time — a delayed or out-of-order completion can
+    /// never make evidence look fresher than a newer one already recorded.
     pub async fn finish(
         &self,
-        request: &ReattestRequest,
+        request: ReattestRequest,
         response_body: &[u8],
     ) -> Result<Report, AtlsVerificationError> {
         let result = self
@@ -179,18 +208,18 @@ impl Reattester {
                 &self.session_ekm,
             )
             .await;
-        self.finish_result(result)
+        self.finish_result(result, request.issued_at_millis)
     }
 
-    /// Record success (refresh evidence age) or wrap failure.
+    /// Record success (anchor evidence age at issuance) or wrap failure.
     fn finish_result(
         &self,
         result: Result<Report, AtlsVerificationError>,
+        issued_at_millis: u64,
     ) -> Result<Report, AtlsVerificationError> {
         match result {
             Ok(report) => {
-                self.verified_at_millis
-                    .store(mono_millis(), Ordering::Release);
+                self.record_verified_at(issued_at_millis);
                 Ok(report)
             }
             Err(source) => Err(AtlsVerificationError::Reattestation {
@@ -198,15 +227,26 @@ impl Reattester {
             }),
         }
     }
+
+    /// Advance the last-verified time to `issued_at_millis`, never backwards:
+    /// an older exchange completing late must not shadow a newer success.
+    fn record_verified_at(&self, issued_at_millis: u64) {
+        self.verified_at_millis
+            .fetch_max(issued_at_millis, Ordering::AcqRel);
+    }
 }
 
 /// A prepared re-attestation request for caller-owned transports.
 ///
 /// Holds the fresh nonce (kept private so it cannot be tampered with between
-/// [`Reattester::begin`] and [`Reattester::finish`]) plus helpers describing
-/// the HTTP request to send to the attester.
+/// [`Reattester::begin`] and [`Reattester::finish`]) and its issuance time,
+/// plus helpers describing the HTTP request to send to the attester.
+///
+/// Deliberately neither `Clone` nor `Copy`: [`Reattester::finish`] consumes
+/// it, so one issued nonce can complete at most one exchange.
 pub struct ReattestRequest {
     nonce: [u8; 32],
+    issued_at_millis: u64,
 }
 
 impl ReattestRequest {
@@ -479,12 +519,64 @@ mod tests {
         let reattester = test_reattester(300);
         let request = reattester.begin();
 
-        let err = reattester.finish(&request, b"not json").await.unwrap_err();
+        let err = reattester.finish(request, b"not json").await.unwrap_err();
         match err {
             AtlsVerificationError::Reattestation { source } => {
                 assert!(matches!(*source, AtlsVerificationError::Quote(_)));
             }
             other => panic!("expected Reattestation error, got: {other}"),
         }
+    }
+
+    #[test]
+    fn test_begin_stamps_issuance_time() {
+        let reattester = test_reattester(300);
+        let before = mono_millis();
+        let request = reattester.begin();
+        let after = mono_millis();
+        assert!(request.issued_at_millis >= before);
+        assert!(request.issued_at_millis <= after);
+    }
+
+    #[test]
+    fn test_record_verified_at_never_regresses() {
+        let reattester = test_reattester(300);
+        let newer = mono_millis() + 10_000;
+        let older = newer - 5_000;
+
+        // A newer exchange completes first...
+        reattester.record_verified_at(newer);
+        // ...then an older-issued exchange completes late: it must not make
+        // the evidence look fresher than the newer success, nor roll it back.
+        reattester.record_verified_at(older);
+
+        assert_eq!(
+            reattester.verified_at_millis.load(Ordering::Acquire),
+            newer,
+            "out-of-order completion must not shadow a newer success"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_delayed_failed_completion_keeps_evidence_stale() {
+        let reattester = test_reattester(300);
+        backdate(&reattester, 400);
+        assert!(reattester.is_due());
+
+        // A request issued long ago (delayed completion) that fails appraisal
+        // must not refresh anything.
+        let stale_request = ReattestRequest {
+            nonce: [0u8; 32],
+            issued_at_millis: mono_millis().saturating_sub(1_000_000),
+        };
+        let err = reattester
+            .finish(stale_request, b"not json")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AtlsVerificationError::Reattestation { .. }));
+        assert!(reattester.is_due(), "failed completion must keep staleness");
+        // Note: replaying a completed exchange is prevented at compile time —
+        // `finish` consumes the `ReattestRequest`, which is neither Clone nor
+        // Copy.
     }
 }
