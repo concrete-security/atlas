@@ -270,22 +270,33 @@ function armEvidenceExpiry(socket, intervalSecs) {
   socket.atlsIdle = false
   if (socket.atlsExpiresAt === Infinity) return
 
-  const delay = socket.atlsExpiresAt - socket.atlsVerifiedAt
-  if (delay > MAX_TIMEOUT_MS) return
-
-  const timer = setTimeout(() => {
-    if (socket.atlsIdle) {
-      debug("agent:destroy-idle-expired", { expiresAt: socket.atlsExpiresAt })
-      socket.destroy()
+  // Chain timers for expiries beyond Node's setTimeout clamp (2^31 - 1 ms):
+  // a single oversized setTimeout would fire after ~1 ms instead of waiting.
+  let timer = null
+  const arm = () => {
+    const remaining = socket.atlsExpiresAt - Date.now()
+    if (remaining > MAX_TIMEOUT_MS) {
+      timer = setTimeout(arm, MAX_TIMEOUT_MS)
     } else {
-      // Busy with an in-flight response; keepSocketAlive() retires it when
-      // the response completes.
-      socket.atlsExpired = true
+      timer = setTimeout(() => {
+        if (socket.atlsIdle) {
+          debug("agent:destroy-idle-expired", { expiresAt: socket.atlsExpiresAt })
+          socket.destroy()
+        } else {
+          // Busy with an in-flight response; keepSocketAlive() retires it when
+          // the response completes.
+          socket.atlsExpired = true
+        }
+      }, Math.max(remaining, 0))
     }
-  }, delay)
-  timer.unref?.()
+    timer.unref?.()
+  }
+  arm()
   socket.once("close", () => clearTimeout(timer))
 }
+
+/** Error code used when a request is denied because the pooled socket's attestation evidence expired. */
+const ATLS_EVIDENCE_EXPIRED = "ATLS_EVIDENCE_EXPIRED"
 
 /** Whether an agent socket's attestation evidence has expired. */
 function atlsEvidenceExpired(socket) {
@@ -381,6 +392,22 @@ export function createAtlsAgent(options) {
     }
 
     reuseSocket(socket, req) {
+      if (atlsEvidenceExpired(socket)) {
+        // Fail closed: never dispatch a request on expired evidence. This
+        // covers sockets that expired while idle in the pool (between the
+        // unref'd timer firing and reuse, or if the process was suspended).
+        // The denied request carries a tagged error; createAtlsFetch retries
+        // it once on a fresh, fully attested connection.
+        debug("agent:deny-expired-reuse", { expiresAt: socket.atlsExpiresAt })
+        socket.atlsExpired = true
+        const err = new Error(
+          "aTLS attestation evidence expired; reconnect required"
+        )
+        err.code = ATLS_EVIDENCE_EXPIRED
+        socket.destroy()
+        req.destroy(err)
+        return
+      }
       socket.atlsIdle = false
       super.reuseSocket(socket, req)
     }
@@ -894,7 +921,7 @@ function createAtlsFetchNode(options) {
       contentLength,
     })
 
-    return new Promise((resolve, reject) => {
+    const attempt = (isRetry) => new Promise((resolve, reject) => {
       const reqOptions = {
         hostname: parsed.host,
         port: parseInt(parsed.port),
@@ -926,7 +953,23 @@ function createAtlsFetchNode(options) {
         resolve(response)
       })
 
-      req.on("error", reject)
+      req.on("error", (err) => {
+        // A pooled socket was denied at dispatch because its attestation
+        // evidence expired: transparently retry once — the expired socket is
+        // gone, so the retry opens a fresh, fully attested connection.
+        // Stream/iterable bodies cannot be replayed, so those surface the
+        // error instead.
+        if (
+          !isRetry &&
+          err?.code === ATLS_EVIDENCE_EXPIRED &&
+          (!body || kind === "buffer")
+        ) {
+          debug("fetch:retry-expired-evidence")
+          resolve(attempt(true))
+          return
+        }
+        reject(err)
+      })
 
       if (init.signal) {
         if (init.signal.aborted) {
@@ -978,6 +1021,8 @@ function createAtlsFetchNode(options) {
           req.end()
       }
     })
+
+    return attempt(false)
   }
 }
 

@@ -324,6 +324,53 @@ const tests = [
     agent.destroy()
   }),
 
+  test("AtlsAgent denies reuse of sockets with expired evidence", async () => {
+    const agent = createAtlsAgent({ target: "example.com:443", policy: DEV_POLICY })
+
+    const socket = new EventEmitter()
+    socket.atlsExpiresAt = Date.now() - 1
+    socket.atlsIdle = true
+    let destroyed = false
+    socket.destroy = () => { destroyed = true; return socket }
+    socket.setKeepAlive = () => socket
+    socket.setTimeout = () => socket
+    socket.ref = () => socket
+    socket.unref = () => socket
+
+    let reqErr = null
+    const fakeReq = { destroy(err) { reqErr = err } }
+
+    agent.reuseSocket(socket, fakeReq)
+
+    assert(destroyed, "expired socket must be destroyed at reuse")
+    assert(reqErr, "the denied request must receive an error")
+    assert(reqErr.code === "ATLS_EVIDENCE_EXPIRED", `wrong error code: ${reqErr?.code}`)
+    agent.destroy()
+  }),
+
+  test("armEvidenceExpiry arms a chained timer beyond the setTimeout clamp", async () => {
+    const { armEvidenceExpiry, atlsEvidenceExpired } = _internals
+
+    const socket = new EventEmitter()
+    socket.destroy = () => socket
+    // Interval beyond the 2^31-1 ms setTimeout clamp (~24.8 days): a single
+    // oversized setTimeout would fire after ~1 ms; the chained timer must
+    // still be armed instead of skipped.
+    const intervalSecs = Math.ceil((0x7fffffff + 1) / 1000) + 60
+    armEvidenceExpiry(socket, intervalSecs)
+
+    assert(Number.isFinite(socket.atlsExpiresAt), "expiry deadline must be tracked")
+    assert(socket.listenerCount("close") === 1, "timer cleanup listener must be armed")
+    assert(atlsEvidenceExpired(socket) === false, "not expired yet")
+
+    // A socket past its deadline (e.g. expired while idle) reads as expired
+    // regardless of the timer, which reuseSocket enforces at dispatch.
+    socket.atlsExpiresAt = Date.now() - 1
+    assert(atlsEvidenceExpired(socket) === true, "past deadline must read expired")
+
+    socket.emit("close") // clears the chained timer
+  }),
+
   test("Bun pool re-attests reused connections and refreshes attestation", async () => {
     const { createConnectionPool } = _internals
     const events = []
