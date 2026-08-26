@@ -564,9 +564,11 @@ mod tests {
         assert!(reattester.is_due());
 
         // A request issued long ago (delayed completion) that fails appraisal
-        // must not refresh anything.
+        // must not refresh anything. The nonce value is irrelevant here (the
+        // body fails to parse before the nonce is used); use a random one as
+        // begin() would.
         let stale_request = ReattestRequest {
-            nonce: [0u8; 32],
+            nonce: rand::random(),
             issued_at_millis: mono_millis().saturating_sub(1_000_000),
         };
         let err = reattester
