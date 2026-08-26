@@ -20,7 +20,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::error::AtlsVerificationError;
-use crate::time::now_secs;
+use crate::time::mono_millis;
 use crate::verifier::{AsyncByteStream, Report, Verifier};
 
 /// Whether evidence of `age_secs` is due for re-attestation.
@@ -28,6 +28,19 @@ use crate::verifier::{AsyncByteStream, Report, Verifier};
 /// An interval of 0 disables re-attestation entirely.
 fn due(age_secs: u64, interval_secs: u64) -> bool {
     interval_secs != 0 && age_secs >= interval_secs
+}
+
+/// Evidence age in seconds from monotonic-clock readings.
+///
+/// If the clock appears to have moved backwards (possible only with the wasm
+/// `Date.now()` fallback; the native `Instant` source is monotonic), the
+/// evidence is treated as maximally stale so re-attestation triggers
+/// (fail closed) rather than the age silently reading as zero.
+fn age_secs(now_millis: u64, verified_at_millis: u64) -> u64 {
+    if now_millis < verified_at_millis {
+        return u64::MAX;
+    }
+    (now_millis - verified_at_millis) / 1000
 }
 
 /// Re-attestation handle for an established aTLS connection.
@@ -56,8 +69,9 @@ pub struct Reattester {
     session_ekm: Vec<u8>,
     server_name: String,
     interval_secs: u64,
-    /// UNIX seconds of the last successful verification.
-    verified_at_secs: AtomicU64,
+    /// Monotonic-clock milliseconds ([`mono_millis`]) of the last successful
+    /// verification, so wall-clock steps cannot shrink the evidence age.
+    verified_at_millis: AtomicU64,
 }
 
 impl Reattester {
@@ -78,7 +92,7 @@ impl Reattester {
             session_ekm,
             server_name,
             interval_secs,
-            verified_at_secs: AtomicU64::new(now_secs()),
+            verified_at_millis: AtomicU64::new(mono_millis()),
         }
     }
 
@@ -92,9 +106,14 @@ impl Reattester {
         self.interval_secs
     }
 
-    /// Age in seconds of the current attestation evidence.
+    /// Age in seconds of the current attestation evidence, measured on a
+    /// monotonic clock. Reads as maximally stale if the clock ever appears
+    /// to move backwards (wasm `Date.now()` fallback only).
     pub fn evidence_age_secs(&self) -> u64 {
-        now_secs().saturating_sub(self.verified_at_secs.load(Ordering::Acquire))
+        age_secs(
+            mono_millis(),
+            self.verified_at_millis.load(Ordering::Acquire),
+        )
     }
 
     /// Whether the attestation evidence is older than the configured
@@ -170,7 +189,8 @@ impl Reattester {
     ) -> Result<Report, AtlsVerificationError> {
         match result {
             Ok(report) => {
-                self.verified_at_secs.store(now_secs(), Ordering::Release);
+                self.verified_at_millis
+                    .store(mono_millis(), Ordering::Release);
                 Ok(report)
             }
             Err(source) => Err(AtlsVerificationError::Reattestation {
@@ -233,8 +253,8 @@ mod tests {
 
     fn backdate(reattester: &Reattester, secs: u64) {
         reattester
-            .verified_at_secs
-            .store(now_secs().saturating_sub(secs), Ordering::Release);
+            .verified_at_millis
+            .store(mono_millis().saturating_sub(secs * 1000), Ordering::Release);
     }
 
     /// Read one HTTP request (headers + Content-Length body) from the stream.
@@ -295,6 +315,36 @@ mod tests {
         assert!(!due(299, 300));
         assert!(due(300, 300));
         assert!(due(301, 300));
+    }
+
+    #[test]
+    fn test_age_secs_clock_rollback_is_maximally_stale() {
+        // An apparent backwards clock step (possible only with the wasm
+        // Date.now() fallback) must read as stale, never as fresh.
+        assert_eq!(age_secs(1_000, 2_000), u64::MAX);
+        assert!(due(age_secs(1_000, 2_000), 300));
+        // Disabled re-attestation stays disabled even on rollback.
+        assert!(!due(age_secs(1_000, 2_000), 0));
+        // Normal forward progression.
+        assert_eq!(age_secs(301_000, 1_000), 300);
+        assert_eq!(age_secs(1_000, 1_000), 0);
+    }
+
+    #[test]
+    fn test_is_due_after_clock_rollback() {
+        let reattester = test_reattester(300);
+        // Simulate a verification stamped "in the future" relative to the
+        // current monotonic reading (i.e. the clock rolled back).
+        reattester
+            .verified_at_millis
+            .store(mono_millis() + 3_600_000, Ordering::Release);
+        assert!(reattester.is_due(), "rollback must fail closed");
+
+        let disabled = test_reattester(0);
+        disabled
+            .verified_at_millis
+            .store(mono_millis() + 3_600_000, Ordering::Release);
+        assert!(!disabled.is_due(), "interval 0 stays disabled on rollback");
     }
 
     #[test]
