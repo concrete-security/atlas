@@ -32,12 +32,23 @@ struct CachedCollateral {
 /// Default collateral cache TTL: 8 hours (in seconds).
 const COLLATERAL_CACHE_TTL_SECS: u64 = 8 * 3600;
 
+/// Quote certification-data type carrying the full PCK certificate chain
+/// (mirrors dcap-qvl's private `constants::PCK_CERT_CHAIN`).
+const QUOTE_CERT_TYPE_PCK_CERT_CHAIN: u16 = 5;
+
 /// Process-global collateral cache shared by all verifier instances.
 ///
 /// Keyed by (pccs_url, fmspc, ca) so different PCCS providers or platforms
 /// never collide. Entries expire after `COLLATERAL_CACHE_TTL_SECS`. Sharing
 /// across verifiers means reconnects and short-lived verifiers still benefit
 /// from previously fetched collateral (gated by `cache_collateral`).
+///
+/// Entries hold only machine-independent collateral (TCB info, QE identity,
+/// CRLs): `pck_certificate_chain` is per-machine — dcap-qvl embeds the
+/// fetching quote's own chain and its `verify()` prefers it over the chain
+/// inside the quote under verification — so it is stripped before caching.
+/// Otherwise a quote from one machine could be verified against another
+/// machine's PCK chain (same FMSPC/CA) and false-fail for up to the TTL.
 static COLLATERAL_CACHE: OnceLock<RwLock<HashMap<CollateralCacheKey, CachedCollateral>>> =
     OnceLock::new();
 
@@ -66,8 +77,15 @@ fn lookup_cached_collateral(key: &CollateralCacheKey, now_secs: u64) -> Option<Q
     }
 }
 
-/// Store collateral in the process-global cache.
+/// Store collateral in the process-global cache, stripping the per-machine
+/// PCK certificate chain so the entry is shareable across machines with the
+/// same (pccs_url, fmspc, ca). Consumers verify against the chain embedded
+/// in their own quote instead.
 fn store_cached_collateral(key: CollateralCacheKey, collateral: QuoteCollateralV3, now_secs: u64) {
+    let collateral = QuoteCollateralV3 {
+        pck_certificate_chain: None,
+        ..collateral
+    };
     match collateral_cache().write() {
         Ok(mut guard) => {
             debug!("Caching collateral for FMSPC={}, CA={}", key.1, key.2);
@@ -189,8 +207,17 @@ impl DstackTDXVerifier {
         // Get current time (needed for cache TTL and verification)
         let now_secs = crate::time::now_secs();
 
+        // Cached collateral has its per-machine PCK chain stripped (see
+        // store_cached_collateral), so dcap-qvl's verify() falls back to the
+        // chain embedded in *this* quote. That fallback only exists for
+        // quotes that carry their own chain (cert_type 5), so the cache is
+        // bypassed entirely for other certification data types.
+        let quote_embeds_pck_chain =
+            parsed_quote.inner_cert_type() == QUOTE_CERT_TYPE_PCK_CERT_CHAIN;
+        let use_cache = self.config.cache_collateral && quote_embeds_pck_chain;
+
         // Try to get collateral from the process-global cache (with TTL check)
-        let cached = if self.config.cache_collateral {
+        let cached = if use_cache {
             lookup_cached_collateral(&cache_key, now_secs)
         } else {
             None
@@ -210,8 +237,8 @@ impl DstackTDXVerifier {
                     AtlsVerificationError::Quote(format!("Failed to get collateral: {}", e))
                 })?;
 
-                // Cache if enabled
-                if self.config.cache_collateral {
+                // Cache if enabled (per-machine PCK chain is stripped inside)
+                if use_cache {
                     store_cached_collateral(cache_key, c.clone(), now_secs);
                 }
                 c
@@ -930,6 +957,30 @@ mod tests {
         store_cached_collateral(key_a, collateral_with_marker("a"), 1_000);
         // Same FMSPC/CA but a different PCCS URL must never collide.
         assert!(lookup_cached_collateral(&key_b, 1_000).is_none());
+    }
+
+    #[test]
+    fn test_collateral_cache_strips_per_machine_pck_chain() {
+        let key: CollateralCacheKey = (
+            "https://pccs.test/pck-strip".to_string(),
+            "00906ED50000".to_string(),
+            "platform",
+        );
+        // Collateral fetched while verifying machine A embeds A's PCK chain
+        // (dcap-qvl's get_collateral attaches the fetching quote's chain).
+        let mut collateral = collateral_with_marker("shared");
+        collateral.pck_certificate_chain = Some("machine-a-pck-chain".to_string());
+        store_cached_collateral(key.clone(), collateral, 1_000);
+
+        // A later cache hit (e.g. while verifying machine B's quote, or
+        // machine A after a PCK rotation) must not carry the stored chain:
+        // verify() would prefer it over the chain embedded in the quote
+        // under verification. With it stripped, verification falls back to
+        // the quote's own chain.
+        let hit = lookup_cached_collateral(&key, 1_000).expect("cache hit expected");
+        assert_eq!(hit.pck_certificate_chain, None);
+        // Machine-independent collateral is preserved.
+        assert_eq!(hit.pck_crl_issuer_chain, "shared");
     }
 
     #[test]
