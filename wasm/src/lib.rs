@@ -339,28 +339,59 @@ impl AtlsHttp {
     /// this session). The connection must be idle — check `isReady()` first,
     /// like `fetch()`.
     ///
-    /// On success the stored attestation is refreshed and returned. On
-    /// failure the evidence stays stale and the connection must be closed
-    /// and replaced (fail closed); a fresh connect performs a full
-    /// attestation.
+    /// The connection is unavailable for the *entire* exchange, appraisal
+    /// included: `isReady()` reports false and concurrent `fetch()` calls
+    /// fail until the fresh evidence is fully verified, so no application
+    /// data can ride the connection on unverified evidence.
+    ///
+    /// On success the stored attestation is refreshed and returned. On any
+    /// failure the evidence stays stale and the connection is closed
+    /// (fail closed, enforced here — not delegated to the caller); a fresh
+    /// connect performs a full attestation.
     #[wasm_bindgen(js_name = reattest)]
     pub async fn reattest(&self) -> Result<JsValue, JsValue> {
-        let request = self.reattester.begin();
-        let body_json = request.body_json();
-
-        // Mirrors fetch(): the sender borrow is held for the exchange, so a
-        // concurrent fetch()/reattest() is serialized by the JS caller via
-        // isReady(), exactly like concurrent fetch()+fetch().
-        let mut sender_guard = self.sender.borrow_mut();
-        let sender = sender_guard
-            .as_mut()
-            .ok_or_else(|| JsValue::from_str("connection closed"))?;
+        // Take the sender for the whole exchange so the connection cannot be
+        // used until appraisal completes.
+        let taken = self.sender.borrow_mut().take();
+        let mut sender = match taken {
+            Some(sender) => sender,
+            None => {
+                return Err(JsValue::from_str(
+                    "connection unavailable (closed or re-attestation in progress)",
+                ))
+            }
+        };
 
         if !sender.is_ready() {
+            // Busy with an in-flight response — not broken: restore untouched.
+            *self.sender.borrow_mut() = Some(sender);
             return Err(JsValue::from_str(
                 "connection busy - wait for previous response to complete",
             ));
         }
+
+        match self.reattest_exchange(&mut sender).await {
+            Ok(summary_js) => {
+                // Only fully appraised connections become available again.
+                *self.sender.borrow_mut() = Some(sender);
+                Ok(summary_js)
+            }
+            Err(e) => {
+                // Fail closed: dropping the sender ends the hyper connection.
+                drop(sender);
+                Err(e)
+            }
+        }
+    }
+
+    /// The `/tdx_quote` exchange + appraisal, with the sender held exclusively
+    /// by the caller ([`reattest`](Self::reattest) removed it from `self`).
+    async fn reattest_exchange(
+        &self,
+        sender: &mut SendRequest<Full<Bytes>>,
+    ) -> Result<JsValue, JsValue> {
+        let request = self.reattester.begin();
+        let body_json = request.body_json();
 
         let http_request = Request::builder()
             .method(ReattestRequest::method())
@@ -390,7 +421,6 @@ impl AtlsHttp {
             .await
             .map_err(|e| JsValue::from_str(&format!("reattestation failed: {e}")))?
             .to_bytes();
-        drop(sender_guard);
 
         // No RefCell borrow is held across this await (Reattester is &self).
         // `finish` consumes the request: this exchange cannot be replayed.
@@ -662,5 +692,189 @@ mod tests {
 
         let json = serde_json::to_string(&summary).unwrap();
         assert!(json.contains("\"advisoryIds\":[]"));
+    }
+
+    // ------------------------------------------------------------------
+    // Re-attestation state-machine tests: a real hyper connection over an
+    // in-memory duplex, fully offline.
+    // ------------------------------------------------------------------
+
+    use futures::channel::{mpsc, oneshot};
+    use futures::stream::Stream;
+    use futures::task::{Context, Poll};
+    use std::pin::Pin;
+
+    /// Minimal in-memory duplex implementing the futures I/O traits.
+    struct TestDuplex {
+        rx: mpsc::UnboundedReceiver<Vec<u8>>,
+        tx: mpsc::UnboundedSender<Vec<u8>>,
+        pending: Vec<u8>,
+    }
+
+    fn duplex_pair() -> (TestDuplex, TestDuplex) {
+        let (tx_a, rx_a) = mpsc::unbounded();
+        let (tx_b, rx_b) = mpsc::unbounded();
+        (
+            TestDuplex {
+                rx: rx_b,
+                tx: tx_a,
+                pending: Vec::new(),
+            },
+            TestDuplex {
+                rx: rx_a,
+                tx: tx_b,
+                pending: Vec::new(),
+            },
+        )
+    }
+
+    impl futures::io::AsyncRead for TestDuplex {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &mut [u8],
+        ) -> Poll<std::io::Result<usize>> {
+            if self.pending.is_empty() {
+                match Pin::new(&mut self.rx).poll_next(cx) {
+                    Poll::Ready(Some(chunk)) => self.pending = chunk,
+                    Poll::Ready(None) => return Poll::Ready(Ok(0)),
+                    Poll::Pending => return Poll::Pending,
+                }
+            }
+            let n = self.pending.len().min(buf.len());
+            buf[..n].copy_from_slice(&self.pending[..n]);
+            self.pending.drain(..n);
+            Poll::Ready(Ok(n))
+        }
+    }
+
+    impl futures::io::AsyncWrite for TestDuplex {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            let _ = self.tx.unbounded_send(buf.to_vec());
+            Poll::Ready(Ok(buf.len()))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_close(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            self.tx.close_channel();
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    fn test_reattester() -> Reattester {
+        let mut policy = atlas_rs::DstackTdxPolicy::dev();
+        policy.reattestation_interval_secs = 300;
+        let verifier = atlas_rs::Policy::DstackTdx(policy).into_verifier().unwrap();
+        Reattester::new(
+            verifier,
+            b"peer-cert-der".to_vec(),
+            vec![0u8; 32],
+            "tee.test".to_string(),
+        )
+    }
+
+    /// Read one HTTP request (headers + Content-Length body) from the stream.
+    async fn read_http_request(io: &mut TestDuplex) -> String {
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 1024];
+        loop {
+            let n = io.read(&mut chunk).await.unwrap();
+            assert!(n > 0, "client closed while sending request");
+            buf.extend_from_slice(&chunk[..n]);
+            if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                let headers = String::from_utf8_lossy(&buf[..pos]).to_string();
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| {
+                        line.to_ascii_lowercase()
+                            .strip_prefix("content-length:")
+                            .map(|v| v.trim().parse::<usize>().unwrap())
+                    })
+                    .unwrap_or(0);
+                if buf.len() >= pos + 4 + content_length {
+                    return String::from_utf8(buf).unwrap();
+                }
+            }
+        }
+    }
+
+    /// The connection must be unavailable (isReady() == false) for the whole
+    /// re-attestation exchange — appraisal included — and closed after a
+    /// failed appraisal, enforced in Rust rather than by the JS caller.
+    #[wasm_bindgen_test]
+    async fn test_reattest_unavailable_during_exchange_and_fails_closed() {
+        let (client_io, mut server_io) = duplex_pair();
+
+        let (mut sender, conn) = http1::handshake(HyperIo::new(client_io)).await.unwrap();
+        wasm_bindgen_futures::spawn_local(async move {
+            let _ = conn.await;
+        });
+        // Readiness is driven by the connection task; wait for the first poll.
+        sender.ready().await.unwrap();
+
+        let http = Rc::new(AtlsHttp {
+            sender: Rc::new(RefCell::new(Some(sender))),
+            attestation: RefCell::new(AttestationSummary {
+                trusted: true,
+                tee_type: "Tdx".to_string(),
+                tcb_status: "UpToDate".to_string(),
+                advisory_ids: vec![],
+            }),
+            reattester: Rc::new(test_reattester()),
+        });
+
+        assert!(http.is_ready(), "fresh connection must be ready");
+
+        let (done_tx, done_rx) = oneshot::channel();
+        {
+            let http = http.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                let result = http.reattest().await;
+                let _ = done_tx.send(result.is_err());
+            });
+        }
+
+        // Act as the attester: receive the full quote request while
+        // withholding the response.
+        let request = read_http_request(&mut server_io).await;
+        assert!(request.starts_with("POST /tdx_quote HTTP/1.1\r\n"));
+
+        // The exchange (and the appraisal that follows the response) has not
+        // completed: the connection must be unavailable so no application
+        // request can ride unverified evidence.
+        assert!(
+            !http.is_ready(),
+            "connection must be unavailable during re-attestation"
+        );
+
+        // Respond 200 with an empty event log: appraisal fails offline at
+        // the certificate check, before any network access.
+        let body = serde_json::json!({
+            "quote": {"quote": "", "event_log": "[]", "report_data": "", "vm_config": ""}
+        })
+        .to_string();
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        server_io.write_all(response.as_bytes()).await.unwrap();
+        server_io.flush().await.unwrap();
+
+        let failed = done_rx.await.unwrap();
+        assert!(failed, "appraisal of an empty event log must fail");
+
+        // Fail closed: the failed connection stays unusable.
+        assert!(
+            !http.is_ready(),
+            "connection must be closed after failed re-attestation"
+        );
     }
 }
