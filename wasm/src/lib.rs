@@ -11,13 +11,16 @@
 mod hyper_io;
 
 use async_io_stream::IoStream;
+use atlas_rs::{
+    atls_connect, atls_connect_with_reattester, dstack::merge_with_default_app_compose,
+    AsyncWriteExt, Policy, ReattestRequest, Reattester, Report, TlsStream,
+};
 use bytes::Bytes;
 use futures::io::{ReadHalf, WriteHalf};
 use futures::AsyncReadExt;
 use http_body_util::{BodyExt, Full};
 use hyper::client::conn::http1;
 use hyper::Request;
-use atlas_rs::{dstack::merge_with_default_app_compose, atls_connect, AsyncWriteExt, Policy, TlsStream};
 use serde::Serialize;
 use std::{cell::RefCell, rc::Rc};
 use wasm_bindgen::prelude::*;
@@ -56,28 +59,30 @@ fn create_readable_stream(reader: ReadHalf<TlsStream<WsIo>>) -> web_sys::Readabl
     let underlying_source = Object::new();
 
     let reader_clone = reader.clone();
-    let pull = Closure::wrap(Box::new(move |controller: ReadableStreamDefaultController| {
-        let reader = reader_clone.clone();
-        let promise = wasm_bindgen_futures::future_to_promise(async move {
-            let mut buf = vec![0u8; 16 * 1024];
-            let mut reader_ref = reader.borrow_mut();
-            match reader_ref.read(&mut buf).await {
-                Ok(0) => {
-                    controller.close().ok();
+    let pull = Closure::wrap(
+        Box::new(move |controller: ReadableStreamDefaultController| {
+            let reader = reader_clone.clone();
+            let promise = wasm_bindgen_futures::future_to_promise(async move {
+                let mut buf = vec![0u8; 16 * 1024];
+                let mut reader_ref = reader.borrow_mut();
+                match reader_ref.read(&mut buf).await {
+                    Ok(0) => {
+                        controller.close().ok();
+                    }
+                    Ok(n) => {
+                        let chunk = Uint8Array::from(&buf[..n]);
+                        controller.enqueue_with_chunk(&chunk.into()).ok();
+                    }
+                    Err(e) => {
+                        let error = JsValue::from_str(&e.to_string());
+                        controller.error_with_e(&error);
+                    }
                 }
-                Ok(n) => {
-                    let chunk = Uint8Array::from(&buf[..n]);
-                    controller.enqueue_with_chunk(&chunk.into()).ok();
-                }
-                Err(e) => {
-                    let error = JsValue::from_str(&e.to_string());
-                    controller.error_with_e(&error);
-                }
-            }
-            Ok(JsValue::UNDEFINED)
-        });
-        promise
-    }) as Box<dyn FnMut(ReadableStreamDefaultController) -> Promise>);
+                Ok(JsValue::UNDEFINED)
+            });
+            promise
+        }) as Box<dyn FnMut(ReadableStreamDefaultController) -> Promise>,
+    );
 
     Reflect::set(&underlying_source, &"pull".into(), pull.as_ref()).unwrap();
     pull.forget();
@@ -95,11 +100,29 @@ pub struct AttestationSummary {
     pub advisory_ids: Vec<String>,
 }
 
+fn summarize(report: &Report) -> AttestationSummary {
+    match report {
+        Report::Tdx(verified) => AttestationSummary {
+            trusted: true,
+            tee_type: "Tdx".to_string(),
+            tcb_status: verified.status.clone(),
+            advisory_ids: verified.advisory_ids.clone(),
+        },
+    }
+}
+
 /// An attested TLS stream over a WebSocket connection.
 ///
 /// Provides a native `ReadableStream` for response data and a `send` method
 /// for writing requests. This design allows zero-copy response streaming
 /// while keeping the write path simple.
+///
+/// Re-attestation is not supported on this low-level stream: the pull-based
+/// `ReadableStream` may hold a pending read, and the caller owns the
+/// application protocol framing, so an in-band quote exchange could
+/// interleave with application traffic. Use [`AtlsHttp`] for long-lived
+/// connections with transparent re-attestation, or reconnect periodically
+/// (every connect performs a full attestation).
 #[wasm_bindgen]
 pub struct AttestedStream {
     writer: Rc<RefCell<Option<WriteHalf<TlsStream<WsIo>>>>>,
@@ -149,18 +172,9 @@ impl AttestedStream {
 
         let readable = create_readable_stream(reader);
 
-        let attestation = match &report {
-            atlas_rs::Report::Tdx(verified) => AttestationSummary {
-                trusted: true,
-                tee_type: "Tdx".to_string(),
-                tcb_status: verified.status.clone(),
-                advisory_ids: verified.advisory_ids.clone(),
-            },
-        };
-
         Ok(AttestedStream {
             writer: Rc::new(RefCell::new(Some(writer))),
-            attestation,
+            attestation: summarize(&report),
             readable,
         })
     }
@@ -231,7 +245,12 @@ pub struct AtlsHttp {
     /// The hyper HTTP/1.1 sender - can make multiple requests on the same connection.
     /// Stored as Option to allow detecting when the connection is closed.
     sender: Rc<RefCell<Option<SendRequest<Full<Bytes>>>>>,
-    attestation: AttestationSummary,
+    /// Latest attestation result; refreshed by `reattest()`.
+    attestation: RefCell<AttestationSummary>,
+    /// Re-attestation handle retaining the verifier, session peer
+    /// certificate, and session EKM (captured before hyper consumed the
+    /// stream — the raw stream is unreachable afterwards).
+    reattester: Rc<Reattester>,
 }
 
 #[wasm_bindgen]
@@ -259,7 +278,7 @@ impl AtlsHttp {
             .await
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
 
-        let (tls, report) = atls_connect(
+        let (tls, report, reattester) = atls_connect_with_reattester(
             ws_stream.into_io(),
             server_name,
             policy,
@@ -268,14 +287,7 @@ impl AtlsHttp {
         .await
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
 
-        let attestation = match &report {
-            atlas_rs::Report::Tdx(verified) => AttestationSummary {
-                trusted: true,
-                tee_type: "Tdx".to_string(),
-                tcb_status: verified.status.clone(),
-                advisory_ids: verified.advisory_ids.clone(),
-            },
-        };
+        let attestation = summarize(&report);
 
         // Wrap TLS stream for hyper compatibility
         let io = HyperIo::new(tls);
@@ -298,15 +310,129 @@ impl AtlsHttp {
 
         Ok(AtlsHttp {
             sender: Rc::new(RefCell::new(Some(sender))),
-            attestation,
+            attestation: RefCell::new(attestation),
+            reattester: Rc::new(reattester),
         })
     }
 
-    /// Get attestation result.
+    /// Get the latest attestation result (refreshed by `reattest()`).
     #[wasm_bindgen(js_name = attestation)]
     pub fn attestation(&self) -> Result<JsValue, JsValue> {
-        serde_wasm_bindgen::to_value(&self.attestation)
+        serde_wasm_bindgen::to_value(&*self.attestation.borrow())
             .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// Whether the connection's attestation evidence is older than the
+    /// policy's `reattestation_interval_secs`.
+    ///
+    /// Always false when re-attestation is disabled (interval 0).
+    #[wasm_bindgen(js_name = isReattestationDue)]
+    pub fn is_reattestation_due(&self) -> bool {
+        self.reattester.is_due()
+    }
+
+    /// Re-attest the connection over the live HTTP/1.1 session.
+    ///
+    /// Sends a `POST /tdx_quote` request with a fresh nonce through the same
+    /// hyper connection and runs the full verification pipeline on the
+    /// response (`report_data = SHA512(nonce || session_ekm)` binds it to
+    /// this session). The connection must be idle — check `isReady()` first,
+    /// like `fetch()`.
+    ///
+    /// The connection is unavailable for the *entire* exchange, appraisal
+    /// included: `isReady()` reports false and concurrent `fetch()` calls
+    /// fail until the fresh evidence is fully verified, so no application
+    /// data can ride the connection on unverified evidence.
+    ///
+    /// On success the stored attestation is refreshed and returned. On any
+    /// failure the evidence stays stale and the connection is closed
+    /// (fail closed, enforced here — not delegated to the caller); a fresh
+    /// connect performs a full attestation.
+    #[wasm_bindgen(js_name = reattest)]
+    pub async fn reattest(&self) -> Result<JsValue, JsValue> {
+        // Take the sender for the whole exchange so the connection cannot be
+        // used until appraisal completes.
+        let taken = self.sender.borrow_mut().take();
+        let mut sender = match taken {
+            Some(sender) => sender,
+            None => {
+                return Err(JsValue::from_str(
+                    "connection unavailable (closed or re-attestation in progress)",
+                ))
+            }
+        };
+
+        if !sender.is_ready() {
+            // Busy with an in-flight response — not broken: restore untouched.
+            *self.sender.borrow_mut() = Some(sender);
+            return Err(JsValue::from_str(
+                "connection busy - wait for previous response to complete",
+            ));
+        }
+
+        match self.reattest_exchange(&mut sender).await {
+            Ok(summary_js) => {
+                // Only fully appraised connections become available again.
+                *self.sender.borrow_mut() = Some(sender);
+                Ok(summary_js)
+            }
+            Err(e) => {
+                // Fail closed: dropping the sender ends the hyper connection.
+                drop(sender);
+                Err(e)
+            }
+        }
+    }
+
+    /// The `/tdx_quote` exchange + appraisal, with the sender held exclusively
+    /// by the caller ([`reattest`](Self::reattest) removed it from `self`).
+    async fn reattest_exchange(
+        &self,
+        sender: &mut SendRequest<Full<Bytes>>,
+    ) -> Result<JsValue, JsValue> {
+        let request = self.reattester.begin();
+        let body_json = request.body_json();
+
+        let http_request = Request::builder()
+            .method(ReattestRequest::method())
+            .uri(ReattestRequest::path())
+            .header("Host", self.reattester.server_name())
+            .header("Content-Type", ReattestRequest::content_type())
+            .header("Content-Length", body_json.len().to_string())
+            .body(Full::new(Bytes::from(body_json)))
+            .map_err(|e| JsValue::from_str(&format!("Failed to build request: {e}")))?;
+
+        let response = sender
+            .send_request(http_request)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("reattestation failed: {e}")))?;
+
+        let status = response.status();
+        if status != hyper::StatusCode::OK {
+            return Err(JsValue::from_str(&format!(
+                "reattestation failed: /tdx_quote returned HTTP {status}"
+            )));
+        }
+
+        // Collect the response body (hyper strips chunked framing).
+        let body_bytes = response
+            .into_body()
+            .collect()
+            .await
+            .map_err(|e| JsValue::from_str(&format!("reattestation failed: {e}")))?
+            .to_bytes();
+
+        // No RefCell borrow is held across this await (Reattester is &self).
+        // `finish` consumes the request: this exchange cannot be replayed.
+        let report = self
+            .reattester
+            .finish(request, &body_bytes)
+            .await
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+        let summary = summarize(&report);
+        *self.attestation.borrow_mut() = summary.clone();
+        serde_wasm_bindgen::to_value(&summary).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     /// Check if the connection is ready for another request.
@@ -419,7 +545,11 @@ impl AtlsHttp {
         let headers_obj = Object::new();
         for (name, value) in response.headers() {
             let value_str = value.to_str().unwrap_or("");
-            Reflect::set(&headers_obj, &name.as_str().into(), &JsValue::from_str(value_str))?;
+            Reflect::set(
+                &headers_obj,
+                &name.as_str().into(),
+                &JsValue::from_str(value_str),
+            )?;
         }
 
         // Create ReadableStream from hyper body
@@ -450,38 +580,40 @@ fn create_hyper_body_stream(body: hyper::body::Incoming) -> web_sys::ReadableStr
     let body = Rc::new(RefCell::new(Some(body)));
     let underlying_source = Object::new();
 
-    let pull = Closure::wrap(Box::new(move |controller: ReadableStreamDefaultController| {
-        let body = body.clone();
+    let pull = Closure::wrap(
+        Box::new(move |controller: ReadableStreamDefaultController| {
+            let body = body.clone();
 
-        wasm_bindgen_futures::future_to_promise(async move {
-            let mut body_opt = body.borrow_mut();
+            wasm_bindgen_futures::future_to_promise(async move {
+                let mut body_opt = body.borrow_mut();
 
-            if let Some(body_inner) = body_opt.as_mut() {
-                // Try to get the next frame from the body
-                match body_inner.frame().await {
-                    Some(Ok(frame)) => {
-                        if let Some(data) = frame.data_ref() {
-                            let arr = Uint8Array::from(data.as_ref());
-                            controller.enqueue_with_chunk(&arr.into()).ok();
+                if let Some(body_inner) = body_opt.as_mut() {
+                    // Try to get the next frame from the body
+                    match body_inner.frame().await {
+                        Some(Ok(frame)) => {
+                            if let Some(data) = frame.data_ref() {
+                                let arr = Uint8Array::from(data.as_ref());
+                                controller.enqueue_with_chunk(&arr.into()).ok();
+                            }
+                            // If it's a trailers frame, we ignore it
                         }
-                        // If it's a trailers frame, we ignore it
+                        Some(Err(e)) => {
+                            let error = JsValue::from_str(&format!("Body read error: {e}"));
+                            controller.error_with_e(&error);
+                        }
+                        None => {
+                            // Body complete
+                            controller.close().ok();
+                        }
                     }
-                    Some(Err(e)) => {
-                        let error = JsValue::from_str(&format!("Body read error: {e}"));
-                        controller.error_with_e(&error);
-                    }
-                    None => {
-                        // Body complete
-                        controller.close().ok();
-                    }
+                } else {
+                    controller.close().ok();
                 }
-            } else {
-                controller.close().ok();
-            }
 
-            Ok(JsValue::UNDEFINED)
-        })
-    }) as Box<dyn FnMut(ReadableStreamDefaultController) -> Promise>);
+                Ok(JsValue::UNDEFINED)
+            })
+        }) as Box<dyn FnMut(ReadableStreamDefaultController) -> Promise>,
+    );
 
     Reflect::set(&underlying_source, &"pull".into(), pull.as_ref()).unwrap();
     pull.forget();
@@ -560,5 +692,189 @@ mod tests {
 
         let json = serde_json::to_string(&summary).unwrap();
         assert!(json.contains("\"advisoryIds\":[]"));
+    }
+
+    // ------------------------------------------------------------------
+    // Re-attestation state-machine tests: a real hyper connection over an
+    // in-memory duplex, fully offline.
+    // ------------------------------------------------------------------
+
+    use futures::channel::{mpsc, oneshot};
+    use futures::stream::Stream;
+    use futures::task::{Context, Poll};
+    use std::pin::Pin;
+
+    /// Minimal in-memory duplex implementing the futures I/O traits.
+    struct TestDuplex {
+        rx: mpsc::UnboundedReceiver<Vec<u8>>,
+        tx: mpsc::UnboundedSender<Vec<u8>>,
+        pending: Vec<u8>,
+    }
+
+    fn duplex_pair() -> (TestDuplex, TestDuplex) {
+        let (tx_a, rx_a) = mpsc::unbounded();
+        let (tx_b, rx_b) = mpsc::unbounded();
+        (
+            TestDuplex {
+                rx: rx_b,
+                tx: tx_a,
+                pending: Vec::new(),
+            },
+            TestDuplex {
+                rx: rx_a,
+                tx: tx_b,
+                pending: Vec::new(),
+            },
+        )
+    }
+
+    impl futures::io::AsyncRead for TestDuplex {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &mut [u8],
+        ) -> Poll<std::io::Result<usize>> {
+            if self.pending.is_empty() {
+                match Pin::new(&mut self.rx).poll_next(cx) {
+                    Poll::Ready(Some(chunk)) => self.pending = chunk,
+                    Poll::Ready(None) => return Poll::Ready(Ok(0)),
+                    Poll::Pending => return Poll::Pending,
+                }
+            }
+            let n = self.pending.len().min(buf.len());
+            buf[..n].copy_from_slice(&self.pending[..n]);
+            self.pending.drain(..n);
+            Poll::Ready(Ok(n))
+        }
+    }
+
+    impl futures::io::AsyncWrite for TestDuplex {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            let _ = self.tx.unbounded_send(buf.to_vec());
+            Poll::Ready(Ok(buf.len()))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_close(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            self.tx.close_channel();
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    fn test_reattester() -> Reattester {
+        let mut policy = atlas_rs::DstackTdxPolicy::dev();
+        policy.reattestation_interval_secs = 300;
+        let verifier = atlas_rs::Policy::DstackTdx(policy).into_verifier().unwrap();
+        Reattester::new(
+            verifier,
+            b"peer-cert-der".to_vec(),
+            vec![0u8; 32],
+            "tee.test".to_string(),
+        )
+    }
+
+    /// Read one HTTP request (headers + Content-Length body) from the stream.
+    async fn read_http_request(io: &mut TestDuplex) -> String {
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 1024];
+        loop {
+            let n = io.read(&mut chunk).await.unwrap();
+            assert!(n > 0, "client closed while sending request");
+            buf.extend_from_slice(&chunk[..n]);
+            if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                let headers = String::from_utf8_lossy(&buf[..pos]).to_string();
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| {
+                        line.to_ascii_lowercase()
+                            .strip_prefix("content-length:")
+                            .map(|v| v.trim().parse::<usize>().unwrap())
+                    })
+                    .unwrap_or(0);
+                if buf.len() >= pos + 4 + content_length {
+                    return String::from_utf8(buf).unwrap();
+                }
+            }
+        }
+    }
+
+    /// The connection must be unavailable (isReady() == false) for the whole
+    /// re-attestation exchange — appraisal included — and closed after a
+    /// failed appraisal, enforced in Rust rather than by the JS caller.
+    #[wasm_bindgen_test]
+    async fn test_reattest_unavailable_during_exchange_and_fails_closed() {
+        let (client_io, mut server_io) = duplex_pair();
+
+        let (mut sender, conn) = http1::handshake(HyperIo::new(client_io)).await.unwrap();
+        wasm_bindgen_futures::spawn_local(async move {
+            let _ = conn.await;
+        });
+        // Readiness is driven by the connection task; wait for the first poll.
+        sender.ready().await.unwrap();
+
+        let http = Rc::new(AtlsHttp {
+            sender: Rc::new(RefCell::new(Some(sender))),
+            attestation: RefCell::new(AttestationSummary {
+                trusted: true,
+                tee_type: "Tdx".to_string(),
+                tcb_status: "UpToDate".to_string(),
+                advisory_ids: vec![],
+            }),
+            reattester: Rc::new(test_reattester()),
+        });
+
+        assert!(http.is_ready(), "fresh connection must be ready");
+
+        let (done_tx, done_rx) = oneshot::channel();
+        {
+            let http = http.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                let result = http.reattest().await;
+                let _ = done_tx.send(result.is_err());
+            });
+        }
+
+        // Act as the attester: receive the full quote request while
+        // withholding the response.
+        let request = read_http_request(&mut server_io).await;
+        assert!(request.starts_with("POST /tdx_quote HTTP/1.1\r\n"));
+
+        // The exchange (and the appraisal that follows the response) has not
+        // completed: the connection must be unavailable so no application
+        // request can ride unverified evidence.
+        assert!(
+            !http.is_ready(),
+            "connection must be unavailable during re-attestation"
+        );
+
+        // Respond 200 with an empty event log: appraisal fails offline at
+        // the certificate check, before any network access.
+        let body = serde_json::json!({
+            "quote": {"quote": "", "event_log": "[]", "report_data": "", "vm_config": ""}
+        })
+        .to_string();
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        server_io.write_all(response.as_bytes()).await.unwrap();
+        server_io.flush().await.unwrap();
+
+        let failed = done_rx.await.unwrap();
+        assert!(failed, "appraisal of an empty event log must fail");
+
+        // Fail closed: the failed connection stays unusable.
+        assert!(
+            !http.is_ready(),
+            "connection must be closed after failed re-attestation"
+        );
     }
 }

@@ -170,6 +170,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tokio-rustls",
+ "wasm-bindgen",
  "webpki-roots 0.26.11",
 ]
 

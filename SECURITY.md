@@ -54,6 +54,8 @@ The following properties must hold:
 - TDX evidence is cryptographically verified and its TCB status is explicitly allowed by policy;
 - the attested certificate and EKM bind the evidence to the current TLS connection and prevent replay across sessions;
 - when runtime verification is enabled, expected bootchain measurements, OS image, application composition, and replayed runtime measurements must all match;
+- unless re-attestation is explicitly disabled (`reattestation_interval_secs: 0`), no request is dispatched by a binding's HTTP client on a connection whose attestation evidence is older than the configured interval (default 300 seconds): the connection is transparently re-attested in-band — the full verification pipeline over the live session, with a fresh nonce bound to the same session EKM — or replaced by a freshly attested connection;
+- a failed re-attestation is fail-closed: the evidence age is never refreshed, the connection is torn down, and it is never reused;
 - verification failures are fail-closed and never return a usable connection;
 - language bindings preserve the core verification result and do not silently weaken policy;
 - the proxy rejects every target that is not exactly present in its configured allowlist; and
@@ -70,5 +72,11 @@ The following are not vulnerabilities by themselves:
 - social engineering, physical attacks, volumetric denial of service, and documentation-only issues without security impact.
 
 A path that activates relaxed verification without explicit caller intent, or that bypasses checks which remain promised in relaxed mode, is in scope. Intel TDX through Dstack is the current production verifier; planned TEE platforms are not security claims until implemented and documented.
+
+Known limitations of periodic re-attestation:
+
+- staleness is checked lazily at message boundaries, so a single response that streams for longer than the interval is not interrupted mid-flight; the connection is re-verified at the next boundary;
+- the residual window between re-attestations remains: workload or platform state changes are detected no faster than the configured interval, and only insofar as they are reflected in measured state (quotes cannot reveal unmeasured runtime memory modification);
+- the low-level raw-stream APIs (`atls_connect` in Rust, `AttestedStream` in WASM) leave re-attestation to the caller, since the library does not know the application's protocol framing; the Rust `Reattester` API supports doing it manually.
 
 Only test systems you own or have explicit permission to test. Do not disrupt services, access other users' data, or test Concrete-operated production infrastructure without prior written authorization.

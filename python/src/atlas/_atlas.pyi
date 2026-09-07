@@ -1,5 +1,12 @@
 """Type stubs for the Rust _atlas extension module (PyO3)."""
 
+class ReattestationError(Exception):
+    """Re-attestation of an established aTLS connection failed.
+
+    The connection has been closed (fail closed); reconnecting performs a
+    full fresh attestation.
+    """
+
 class AtlsConnection:
     """An attested TLS connection backed by Rust."""
 

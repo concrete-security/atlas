@@ -1,11 +1,11 @@
+use atlas_rs::{
+    atls_connect_with_reattester as core_atls_connect_with_reattester,
+    dstack::merge_with_default_app_compose, Policy, Reattester, Report, TlsStream as CoreTlsStream,
+};
 use bytes::{Bytes, BytesMut};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use once_cell::sync::Lazy;
-use atlas_rs::{
-    dstack::merge_with_default_app_compose, atls_connect as core_atls_connect, Policy, Report,
-    TlsStream as CoreTlsStream,
-};
 use rustls::crypto::aws_lc_rs::default_provider;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -51,6 +51,10 @@ pub struct JsAtlsConnection {
     #[napi(js_name = "socketId")]
     pub socket_id: u32,
     pub attestation: JsAttestation,
+    /// Max age (seconds) of attestation evidence before transparent
+    /// re-attestation, from the policy. 0 means re-attestation is disabled.
+    #[napi(js_name = "reattestationIntervalSecs")]
+    pub reattestation_interval_secs: u32,
 }
 
 type TlsStream = CoreTlsStream<TcpStream>;
@@ -58,7 +62,12 @@ type TlsStream = CoreTlsStream<TcpStream>;
 struct SocketState {
     reader: Arc<Mutex<ReadHalf<TlsStream>>>,
     writer: Arc<Mutex<WriteHalf<TlsStream>>>,
+    reattester: Arc<Reattester>,
 }
+
+/// Upper bound on one in-band re-attestation exchange (quote generation,
+/// possible collateral fetch, and DCAP verification included).
+const REATTEST_TIMEOUT_SECS: u64 = 30;
 
 static SOCKETS: Lazy<Mutex<HashMap<u32, SocketState>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 static NEXT_SOCKET_ID: AtomicU32 = AtomicU32::new(1);
@@ -97,15 +106,12 @@ pub async fn atls_connect(
         .await
         .map_err(|err| Error::from_reason(format!("tcp connect failed: {err}")))?;
 
-    let (tls, report) = core_atls_connect(
-        tcp,
-        &server_name,
-        policy,
-        Some(vec!["http/1.1".into()]),
-    )
-    .await
-    .map_err(|err| Error::from_reason(format!("atls handshake failed: {err}")))?;
+    let (tls, report, reattester) =
+        core_atls_connect_with_reattester(tcp, &server_name, policy, Some(vec!["http/1.1".into()]))
+            .await
+            .map_err(|err| Error::from_reason(format!("atls handshake failed: {err}")))?;
 
+    let reattestation_interval_secs = reattester.interval_secs().min(u32::MAX as u64) as u32;
     let socket_id = NEXT_SOCKET_ID.fetch_add(1, Ordering::SeqCst);
     let (reader, writer) = tokio::io::split(tls);
     SOCKETS.lock().await.insert(
@@ -113,13 +119,87 @@ pub async fn atls_connect(
         SocketState {
             reader: Arc::new(Mutex::new(reader)),
             writer: Arc::new(Mutex::new(writer)),
+            reattester: Arc::new(reattester),
         },
     );
 
     Ok(JsAtlsConnection {
         socket_id,
         attestation: report.into(),
+        reattestation_interval_secs,
     })
+}
+
+/// Re-attest the connection in-band if its attestation evidence is older
+/// than the policy's `reattestation_interval_secs`.
+///
+/// Must only be called while the connection is quiescent (no request or
+/// response in flight): the exchange sends a `POST /tdx_quote` on the live
+/// TLS stream and reads its response, holding both socket-half locks for the
+/// duration so concurrent reads/writes block instead of interleaving.
+///
+/// Returns the fresh attestation when re-attestation ran, or `null` when the
+/// evidence was still fresh (or re-attestation is disabled). On failure the
+/// socket is torn down (fail closed) and an error is thrown; reconnecting
+/// performs a full fresh attestation.
+#[napi(js_name = "socketReattestIfDue")]
+pub async fn socket_reattest_if_due(socket_id: u32) -> napi::Result<Option<JsAttestation>> {
+    let (reader, writer, reattester) = {
+        let guard = SOCKETS.lock().await;
+        let Some(state) = guard.get(&socket_id) else {
+            return Err(Error::from_reason("socket not found"));
+        };
+        (
+            state.reader.clone(),
+            state.writer.clone(),
+            state.reattester.clone(),
+        )
+    };
+
+    // Fast path without touching the socket locks.
+    if !reattester.is_due() {
+        return Ok(None);
+    }
+
+    // Lock order: writer then reader. Only this function ever holds both.
+    let mut writer_guard = writer.lock().await;
+    let mut reader_guard = reader.lock().await;
+
+    // Re-check under the locks: a concurrent caller may have already
+    // re-attested while we waited.
+    if !reattester.is_due() {
+        return Ok(None);
+    }
+
+    let mut joined = tokio::io::join(&mut *reader_guard, &mut *writer_guard);
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(REATTEST_TIMEOUT_SECS),
+        reattester.reattest(&mut joined),
+    )
+    .await;
+
+    match result {
+        Ok(Ok(report)) => Ok(Some(report.into())),
+        Ok(Err(e)) => {
+            // Fail closed: tear the connection down.
+            drop(reader_guard);
+            let _ = writer_guard.shutdown().await;
+            drop(writer_guard);
+            SOCKETS.lock().await.remove(&socket_id);
+            Err(Error::from_reason(format!("reattestation failed: {e}")))
+        }
+        Err(_elapsed) => {
+            // The exchange was cut off mid-flight; the stream state is
+            // undefined, so the connection cannot be reused.
+            drop(reader_guard);
+            let _ = writer_guard.shutdown().await;
+            drop(writer_guard);
+            SOCKETS.lock().await.remove(&socket_id);
+            Err(Error::from_reason(format!(
+                "reattestation failed: timed out after {REATTEST_TIMEOUT_SECS}s"
+            )))
+        }
+    }
 }
 
 /// Read data from socket
@@ -165,10 +245,12 @@ pub async fn socket_write(socket_id: u32, data: Buffer) -> napi::Result<u32> {
     let bytes = Bytes::from(data.to_vec());
     {
         let mut writer = writer.lock().await;
-        writer.write_all(&bytes)
+        writer
+            .write_all(&bytes)
             .await
             .map_err(|e| Error::from_reason(format!("socket write error: {e}")))?;
-        writer.flush()
+        writer
+            .flush()
             .await
             .map_err(|e| Error::from_reason(format!("socket flush error: {e}")))?;
     }
@@ -231,5 +313,31 @@ mod tests {
         let id1 = NEXT_SOCKET_ID.fetch_add(1, Ordering::SeqCst);
         let id2 = NEXT_SOCKET_ID.fetch_add(1, Ordering::SeqCst);
         assert!(id2 > id1);
+    }
+
+    /// The re-attestation exchange recombines the locked split halves with
+    /// `tokio::io::join`; prove that adapter reads and writes correctly.
+    #[tokio::test]
+    async fn join_over_locked_halves_roundtrips() {
+        let (client, mut server) = tokio::io::duplex(1024);
+        let (reader, writer) = tokio::io::split(client);
+        let reader = Arc::new(Mutex::new(reader));
+        let writer = Arc::new(Mutex::new(writer));
+
+        // Same locking pattern as socket_reattest_if_due: writer then reader.
+        let mut writer_guard = writer.lock().await;
+        let mut reader_guard = reader.lock().await;
+        let mut joined = tokio::io::join(&mut *reader_guard, &mut *writer_guard);
+
+        joined.write_all(b"ping").await.unwrap();
+        joined.flush().await.unwrap();
+        let mut request = [0u8; 4];
+        server.read_exact(&mut request).await.unwrap();
+        assert_eq!(&request, b"ping");
+
+        server.write_all(b"pong").await.unwrap();
+        let mut response = [0u8; 4];
+        joined.read_exact(&mut response).await.unwrap();
+        assert_eq!(&response, b"pong");
     }
 }

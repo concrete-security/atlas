@@ -54,7 +54,10 @@ pub enum AtlsVerificationError {
 
     /// TCB status not in allowed list.
     #[error("TCB status {status} not allowed (allowed: {allowed:?})")]
-    TcbStatusNotAllowed { status: String, allowed: Vec<String> },
+    TcbStatusNotAllowed {
+        status: String,
+        allowed: Vec<String>,
+    },
 
     /// TCB info could not be determined or parsed.
     #[error("TCB info error: {0}")]
@@ -69,7 +72,9 @@ pub enum AtlsVerificationError {
     },
 
     /// Report data mismatch - potential replay attack.
-    #[error("report data mismatch: expected {expected}, got {actual}. Possible replay/relay attack.")]
+    #[error(
+        "report data mismatch: expected {expected}, got {actual}. Possible replay/relay attack."
+    )]
     ReportDataMismatch { expected: String, actual: String },
 
     /// Configuration error.
@@ -87,6 +92,17 @@ pub enum AtlsVerificationError {
     /// Missing server certificate after TLS handshake.
     #[error("missing server certificate")]
     MissingCertificate,
+
+    /// Re-attestation of an established connection failed.
+    ///
+    /// The connection must be treated as unverified and not used further
+    /// (fail closed). The source error distinguishes transport failures
+    /// from verification failures.
+    #[error("re-attestation failed: {source}")]
+    Reattestation {
+        #[source]
+        source: Box<AtlsVerificationError>,
+    },
 
     /// Other errors.
     #[error("{0}")]

@@ -1,7 +1,7 @@
 //! DstackTDXVerifier implementation.
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::{Arc, RwLock};
+use std::sync::{OnceLock, RwLock};
 
 use dcap_qvl::collateral::get_collateral;
 use dcap_qvl::quote::Quote;
@@ -32,10 +32,116 @@ struct CachedCollateral {
 /// Default collateral cache TTL: 8 hours (in seconds).
 const COLLATERAL_CACHE_TTL_SECS: u64 = 8 * 3600;
 
+/// Quote certification-data type carrying the full PCK certificate chain
+/// (mirrors dcap-qvl's private `constants::PCK_CERT_CHAIN`).
+const QUOTE_CERT_TYPE_PCK_CERT_CHAIN: u16 = 5;
+
+/// Process-global collateral cache shared by all verifier instances.
+///
+/// Keyed by (pccs_url, fmspc, ca) so different PCCS providers or platforms
+/// never collide. Entries expire after `COLLATERAL_CACHE_TTL_SECS`. Sharing
+/// across verifiers means reconnects and short-lived verifiers still benefit
+/// from previously fetched collateral (gated by `cache_collateral`).
+///
+/// Entries hold only machine-independent collateral (TCB info, QE identity,
+/// CRLs): `pck_certificate_chain` is per-machine — dcap-qvl embeds the
+/// fetching quote's own chain and its `verify()` prefers it over the chain
+/// inside the quote under verification — so it is stripped before caching.
+/// Otherwise a quote from one machine could be verified against another
+/// machine's PCK chain (same FMSPC/CA) and false-fail for up to the TTL.
+static COLLATERAL_CACHE: OnceLock<RwLock<HashMap<CollateralCacheKey, CachedCollateral>>> =
+    OnceLock::new();
+
+fn collateral_cache() -> &'static RwLock<HashMap<CollateralCacheKey, CachedCollateral>> {
+    COLLATERAL_CACHE.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+/// Look up collateral in the process-global cache, honoring the TTL.
+fn lookup_cached_collateral(key: &CollateralCacheKey, now_secs: u64) -> Option<QuoteCollateralV3> {
+    match collateral_cache().read() {
+        Ok(guard) => guard.get(key).and_then(|entry| {
+            if now_secs.saturating_sub(entry.cached_at_secs) < COLLATERAL_CACHE_TTL_SECS {
+                Some(entry.collateral.clone())
+            } else {
+                debug!(
+                    "Cached collateral expired for FMSPC={}, CA={}",
+                    key.1, key.2
+                );
+                None
+            }
+        }),
+        Err(_) => {
+            warn!("Collateral cache lock poisoned, treating as cache miss");
+            None
+        }
+    }
+}
+
+/// Store collateral in the process-global cache, stripping the per-machine
+/// PCK certificate chain so the entry is shareable across machines with the
+/// same (pccs_url, fmspc, ca). Consumers verify against the chain embedded
+/// in their own quote instead.
+fn store_cached_collateral(key: CollateralCacheKey, collateral: QuoteCollateralV3, now_secs: u64) {
+    let collateral = QuoteCollateralV3 {
+        pck_certificate_chain: None,
+        ..collateral
+    };
+    match collateral_cache().write() {
+        Ok(mut guard) => {
+            debug!("Caching collateral for FMSPC={}, CA={}", key.1, key.2);
+            guard.insert(
+                key,
+                CachedCollateral {
+                    collateral,
+                    cached_at_secs: now_secs,
+                },
+            );
+        }
+        Err(_) => {
+            warn!("Collateral cache lock poisoned, skipping cache write");
+        }
+    }
+}
+
 /// Response from the /tdx_quote endpoint.
 #[derive(Debug, serde::Deserialize)]
 struct QuoteEndpointResponse {
     quote: GetQuoteResponse,
+}
+
+/// How to match the session certificate against "New TLS Certificate" events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CertEventMatch {
+    /// Require the most recent certificate event to match.
+    ///
+    /// Used for the initial handshake: the connection must present the
+    /// attester's current certificate.
+    Latest,
+    /// Accept any certificate event that matches.
+    ///
+    /// Used for re-attestation: the session certificate stays valid for the
+    /// connection lifetime even if the attester has since rotated to a new
+    /// certificate (rotation appends a new event to the append-only log).
+    Any,
+}
+
+/// Decode a "New TLS Certificate" event payload into the cert hash string.
+///
+/// The payload is the hex encoding of the UTF-8 hex digest of the certificate.
+fn decode_cert_event_payload(event: &EventLog) -> Result<String, AtlsVerificationError> {
+    let decoded = hex::decode(&event.event_payload).map_err(|e| {
+        AtlsVerificationError::EventLogParse(format!(
+            "failed to hex-decode certificate event payload: {}",
+            e
+        ))
+    })?;
+
+    String::from_utf8(decoded).map_err(|e| {
+        AtlsVerificationError::EventLogParse(format!(
+            "certificate event payload is not valid UTF-8: {}",
+            e
+        ))
+    })
 }
 
 /// DstackTDXVerifier performs TDX attestation verification for dstack deployments.
@@ -50,8 +156,6 @@ struct QuoteEndpointResponse {
 /// 7. Verify OS image hash
 pub struct DstackTDXVerifier {
     config: DstackTDXVerifierConfig,
-    /// Cached collateral keyed by (pccs_url, fmspc, ca) with TTL expiration.
-    cached_collateral: Arc<RwLock<HashMap<CollateralCacheKey, CachedCollateral>>>,
 }
 
 impl DstackTDXVerifier {
@@ -70,10 +174,7 @@ impl DstackTDXVerifier {
                 ));
             }
         }
-        Ok(Self {
-            config,
-            cached_collateral: Arc::new(RwLock::new(HashMap::new())),
-        })
+        Ok(Self { config })
     }
 
     /// Create a new builder for DstackTDXVerifier.
@@ -93,45 +194,31 @@ impl DstackTDXVerifier {
         // Parse quote to get cache key components (FMSPC and CA)
         let parsed_quote = Quote::parse(quote)
             .map_err(|e| AtlsVerificationError::Quote(format!("Failed to parse quote: {}", e)))?;
-        let fmspc = hex::encode_upper(
-            parsed_quote
-                .fmspc()
-                .map_err(|e| AtlsVerificationError::Quote(format!("Failed to get FMSPC: {}", e)))?,
-        );
+        let fmspc =
+            hex::encode_upper(parsed_quote.fmspc().map_err(|e| {
+                AtlsVerificationError::Quote(format!("Failed to get FMSPC: {}", e))
+            })?);
         let ca = parsed_quote
             .ca()
             .map_err(|e| AtlsVerificationError::Quote(format!("Failed to get CA: {}", e)))?;
 
         let cache_key = (pccs_url.to_string(), fmspc.clone(), ca);
 
-        // Get current time - platform specific (needed for cache TTL and verification)
-        #[cfg(not(target_arch = "wasm32"))]
-        let now_secs = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|e| {
-                AtlsVerificationError::Quote(format!("Failed to get current time: {}", e))
-            })?
-            .as_secs();
+        // Get current time (needed for cache TTL and verification)
+        let now_secs = crate::time::now_secs();
 
-        #[cfg(target_arch = "wasm32")]
-        let now_secs = (js_sys::Date::now() / 1000.0) as u64;
+        // Cached collateral has its per-machine PCK chain stripped (see
+        // store_cached_collateral), so dcap-qvl's verify() falls back to the
+        // chain embedded in *this* quote. That fallback only exists for
+        // quotes that carry their own chain (cert_type 5), so the cache is
+        // bypassed entirely for other certification data types.
+        let quote_embeds_pck_chain =
+            parsed_quote.inner_cert_type() == QUOTE_CERT_TYPE_PCK_CERT_CHAIN;
+        let use_cache = self.config.cache_collateral && quote_embeds_pck_chain;
 
-        // Try to get collateral from cache (with TTL check)
-        let cached = if self.config.cache_collateral {
-            match self.cached_collateral.read() {
-                Ok(guard) => guard.get(&cache_key).and_then(|entry| {
-                    if now_secs.saturating_sub(entry.cached_at_secs) < COLLATERAL_CACHE_TTL_SECS {
-                        Some(entry.collateral.clone())
-                    } else {
-                        debug!("Cached collateral expired for FMSPC={}, CA={}", fmspc, ca);
-                        None
-                    }
-                }),
-                Err(_) => {
-                    warn!("Collateral cache lock poisoned, treating as cache miss");
-                    None
-                }
-            }
+        // Try to get collateral from the process-global cache (with TTL check)
+        let cached = if use_cache {
+            lookup_cached_collateral(&cache_key, now_secs)
         } else {
             None
         };
@@ -146,26 +233,13 @@ impl DstackTDXVerifier {
             }
             None => {
                 debug!("Fetching collateral from {}", pccs_url);
-                let c = get_collateral(pccs_url, quote)
-                    .await
-                    .map_err(|e| {
-                        AtlsVerificationError::Quote(format!("Failed to get collateral: {}", e))
-                    })?;
+                let c = get_collateral(pccs_url, quote).await.map_err(|e| {
+                    AtlsVerificationError::Quote(format!("Failed to get collateral: {}", e))
+                })?;
 
-                // Cache if enabled
-                if self.config.cache_collateral {
-                    match self.cached_collateral.write() {
-                        Ok(mut guard) => {
-                            debug!("Caching collateral for FMSPC={}, CA={}", fmspc, ca);
-                            guard.insert(cache_key, CachedCollateral {
-                                collateral: c.clone(),
-                                cached_at_secs: now_secs,
-                            });
-                        }
-                        Err(_) => {
-                            warn!("Collateral cache lock poisoned, skipping cache write");
-                        }
-                    }
+                // Cache if enabled (per-machine PCK chain is stripped inside)
+                if use_cache {
+                    store_cached_collateral(cache_key, c.clone(), now_secs);
                 }
                 c
             }
@@ -174,8 +248,9 @@ impl DstackTDXVerifier {
         debug!("Collateral received, verifying DCAP quote");
 
         // Verify the quote
-        let report = verify(quote, &collateral, now_secs)
-            .map_err(|e| AtlsVerificationError::Quote(format!("DCAP verification failed: {}", e)))?;
+        let report = verify(quote, &collateral, now_secs).map_err(|e| {
+            AtlsVerificationError::Quote(format!("DCAP verification failed: {}", e))
+        })?;
 
         debug!("DCAP verification complete, TCB status: {}", report.status);
 
@@ -186,10 +261,7 @@ impl DstackTDXVerifier {
             .iter()
             .any(|s| s == &report.status);
 
-        debug!(
-            "TCB status '{}' allowed: {}",
-            report.status, tcb_allowed
-        );
+        debug!("TCB status '{}' allowed: {}", report.status, tcb_allowed);
 
         // If TCB status is OutOfDate, check it's within the grace period (if configured)
         // TODO: enforce_grace_period is currently implemented in a complex manner since
@@ -197,7 +269,13 @@ impl DstackTDXVerifier {
         // extract the TCB date from the quote and collateral manually, which is not ideal.
         // We should update enforce_grace_period when dcap-qvl adds TCB info to the VerifiedReport.
         // This would remove almost all the tdx/grace_period.rs code.
-        enforce_grace_period(&report, &parsed_quote, &collateral, self.config.grace_period, now_secs)?;
+        enforce_grace_period(
+            &report,
+            &parsed_quote,
+            &collateral,
+            self.config.grace_period,
+            now_secs,
+        )?;
 
         if !tcb_allowed {
             return Err(AtlsVerificationError::TcbStatusNotAllowed {
@@ -276,45 +354,55 @@ impl DstackTDXVerifier {
 
     /// Verify certificate is in event log (using dstack-sdk EventLog type).
     ///
+    /// `mode` selects whether only the latest certificate event may match
+    /// (initial handshake) or any certificate event (re-attestation).
+    ///
     /// Returns Ok(true) if cert matches, Ok(false) if cert not found,
     /// or Err if parsing fails.
     fn verify_cert_in_eventlog(
         &self,
         cert_der: &[u8],
         events: &[EventLog],
+        mode: CertEventMatch,
     ) -> Result<bool, AtlsVerificationError> {
         let cert_hash = hex::encode(Sha256::digest(cert_der));
         debug!("Certificate hash: {}", cert_hash);
 
-        // Find last "New TLS Certificate" event
-        let cert_event = events
-            .iter()
-            .rfind(|e| e.event == "New TLS Certificate");
+        match mode {
+            CertEventMatch::Latest => {
+                // Find last "New TLS Certificate" event
+                let cert_event = events.iter().rfind(|e| e.event == "New TLS Certificate");
 
-        match cert_event {
-            Some(event) => {
-                // event_payload is hex-encoded, decode it to get the cert hash string
-                let decoded = hex::decode(&event.event_payload).map_err(|e| {
-                    AtlsVerificationError::EventLogParse(format!(
-                        "failed to hex-decode certificate event payload: {}",
-                        e
-                    ))
-                })?;
-
-                let eventlog_cert_hash = String::from_utf8(decoded).map_err(|e| {
-                    AtlsVerificationError::EventLogParse(format!(
-                        "certificate event payload is not valid UTF-8: {}",
-                        e
-                    ))
-                })?;
-
-                debug!("Certificate hash from event log: {}", eventlog_cert_hash);
-                let cert_match = eventlog_cert_hash == cert_hash;
-                debug!("Certificate hash match: {}", cert_match);
-                Ok(cert_match)
+                match cert_event {
+                    Some(event) => {
+                        let eventlog_cert_hash = decode_cert_event_payload(event)?;
+                        debug!("Certificate hash from event log: {}", eventlog_cert_hash);
+                        let cert_match = eventlog_cert_hash == cert_hash;
+                        debug!("Certificate hash match: {}", cert_match);
+                        Ok(cert_match)
+                    }
+                    None => {
+                        debug!("No 'New TLS Certificate' event found in event log");
+                        Ok(false)
+                    }
+                }
             }
-            None => {
-                debug!("No 'New TLS Certificate' event found in event log");
+            CertEventMatch::Any => {
+                let mut found_any_event = false;
+                for event in events.iter().filter(|e| e.event == "New TLS Certificate") {
+                    found_any_event = true;
+                    // Malformed payloads stay strict errors in both modes.
+                    let eventlog_cert_hash = decode_cert_event_payload(event)?;
+                    if eventlog_cert_hash == cert_hash {
+                        debug!("Certificate hash matched an event log entry");
+                        return Ok(true);
+                    }
+                }
+                if !found_any_event {
+                    debug!("No 'New TLS Certificate' event found in event log");
+                } else {
+                    debug!("No certificate event matched the session certificate");
+                }
                 Ok(false)
             }
         }
@@ -344,11 +432,9 @@ impl DstackTDXVerifier {
         let event = events
             .iter()
             .find(|e| e.event == "compose-hash")
-            .ok_or_else(|| {
-                AtlsVerificationError::AppComposeHashMismatch {
-                    expected: expected.clone(),
-                    actual: "<not found in event log>".to_string(),
-                }
+            .ok_or_else(|| AtlsVerificationError::AppComposeHashMismatch {
+                expected: expected.clone(),
+                actual: "<not found in event log>".to_string(),
             })?;
 
         debug!("App compose hash from event log: {}", event.event_payload);
@@ -494,7 +580,6 @@ impl DstackTDXVerifier {
         debug!("Report data expected: {}", expected);
         debug!("Report data actual:   {}", actual);
 
-        
         if expected != actual {
             return Err(AtlsVerificationError::ReportDataMismatch { expected, actual });
         }
@@ -502,15 +587,20 @@ impl DstackTDXVerifier {
         debug!("Report data verification successful");
         Ok(())
     }
-}
 
-impl AtlsVerifier for DstackTDXVerifier {
-    async fn verify<S>(
+    /// Full verification: fetch a fresh quote in-band over `stream`, then
+    /// appraise it.
+    ///
+    /// `cert_match` selects how the session certificate is matched against
+    /// the event log (`Latest` for initial handshakes, `Any` for
+    /// re-attestation of an established session).
+    pub(crate) async fn verify_with_mode<S>(
         &self,
         stream: &mut S,
         peer_cert: &[u8],
         session_ekm: &[u8],
         hostname: &str,
+        cert_match: CertEventMatch,
     ) -> Result<Report, AtlsVerificationError>
     where
         S: AsyncByteStream,
@@ -519,10 +609,52 @@ impl AtlsVerifier for DstackTDXVerifier {
 
         // 1. Generate nonce and get quote via HTTP POST to /tdx_quote
         let nonce: [u8; 32] = rand::random();
-
-        // Get quote via HTTP POST to /tdx_quote
         let quote_response = get_quote_over_http(stream, &nonce, hostname).await?;
 
+        self.appraise(&quote_response, &nonce, peer_cert, session_ekm, cert_match)
+            .await
+    }
+
+    /// Configured re-attestation interval in seconds (0 = disabled).
+    pub(crate) fn reattestation_interval_secs(&self) -> u64 {
+        self.config.reattestation_interval_secs
+    }
+
+    /// Appraise a `/tdx_quote` response body (raw JSON bytes) fetched by the
+    /// caller over its own transport (e.g. an HTTP client owning the stream).
+    ///
+    /// The caller supplies the `nonce` it sent with the quote request; the
+    /// appraisal enforces `report_data == SHA512(nonce || session_ekm)`.
+    pub(crate) async fn appraise_quote_body(
+        &self,
+        body: &[u8],
+        nonce: &[u8; 32],
+        peer_cert: &[u8],
+        session_ekm: &[u8],
+        cert_match: CertEventMatch,
+    ) -> Result<Report, AtlsVerificationError> {
+        let response: QuoteEndpointResponse = serde_json::from_slice(body).map_err(|e| {
+            AtlsVerificationError::Quote(format!("Failed to parse /tdx_quote response: {}", e))
+        })?;
+
+        self.appraise(&response.quote, nonce, peer_cert, session_ekm, cert_match)
+            .await
+    }
+
+    /// Appraise a quote response: event log decode, certificate binding,
+    /// DCAP verification, report data (nonce + EKM), RTMR replay, and —
+    /// unless disabled — bootchain, app compose, and OS image checks.
+    ///
+    /// Every check runs in full on each call; re-attestation repeats the
+    /// exact appraisal performed at connect time.
+    async fn appraise(
+        &self,
+        quote_response: &GetQuoteResponse,
+        nonce: &[u8; 32],
+        peer_cert: &[u8],
+        session_ekm: &[u8],
+        cert_match: CertEventMatch,
+    ) -> Result<Report, AtlsVerificationError> {
         // 2. Parse event log using dstack-sdk-types
         debug!("Parsing event log");
         let events = quote_response
@@ -532,16 +664,16 @@ impl AtlsVerifier for DstackTDXVerifier {
 
         // 3. Verify certificate in event log
         debug!("Verifying certificate in event log");
-        let cert_in_eventlog = self.verify_cert_in_eventlog(peer_cert, &events)?;
+        let cert_in_eventlog = self.verify_cert_in_eventlog(peer_cert, &events, cert_match)?;
         if !cert_in_eventlog {
             return Err(AtlsVerificationError::CertificateNotInEventLog);
         }
 
         // 4. Verify DCAP quote using dcap-qvl directly
         debug!("Decoding quote for DCAP verification");
-        let quote_bytes = quote_response
-            .decode_quote()
-            .map_err(|e| AtlsVerificationError::Other(anyhow::anyhow!("Failed to decode quote: {}", e)))?;
+        let quote_bytes = quote_response.decode_quote().map_err(|e| {
+            AtlsVerificationError::Other(anyhow::anyhow!("Failed to decode quote: {}", e))
+        })?;
         debug!("Quote decoded ({} bytes)", quote_bytes.len());
 
         // Async quote verification - no blocking!
@@ -549,14 +681,12 @@ impl AtlsVerifier for DstackTDXVerifier {
 
         // 5. Verify report data
         let session_ekm: &[u8; 32] = session_ekm.try_into().map_err(|_| {
-            AtlsVerificationError::Configuration(
-                "session_ekm must be exactly 32 bytes".into(),
-            )
+            AtlsVerificationError::Configuration("session_ekm must be exactly 32 bytes".into())
         })?;
-        self.verify_report_data(&nonce, session_ekm, &verified_report)?;
+        self.verify_report_data(nonce, session_ekm, &verified_report)?;
 
         // 6. Verify RTMR replay against the verified report
-        self.verify_rtmr_replay(&quote_response, &verified_report)?;
+        self.verify_rtmr_replay(quote_response, &verified_report)?;
 
         // Skip remaining checks if runtime verification is disabled
         if self.config.disable_runtime_verification {
@@ -575,6 +705,28 @@ impl AtlsVerifier for DstackTDXVerifier {
 
         debug!("DStack TDX verification complete");
         Ok(Report::Tdx(verified_report))
+    }
+}
+
+impl AtlsVerifier for DstackTDXVerifier {
+    async fn verify<S>(
+        &self,
+        stream: &mut S,
+        peer_cert: &[u8],
+        session_ekm: &[u8],
+        hostname: &str,
+    ) -> Result<Report, AtlsVerificationError>
+    where
+        S: AsyncByteStream,
+    {
+        self.verify_with_mode(
+            stream,
+            peer_cert,
+            session_ekm,
+            hostname,
+            CertEventMatch::Latest,
+        )
+        .await
     }
 }
 
@@ -650,13 +802,9 @@ where
         .ok_or_else(|| AtlsVerificationError::Io("Invalid HTTP response".into()))?;
     let response_body = &response_buf[body_start..];
 
-    let response: QuoteEndpointResponse = serde_json::from_slice(response_body)
-        .map_err(|e| {
-            AtlsVerificationError::Quote(format!(
-                "Failed to parse /tdx_quote response: {}",
-                e
-            ))
-        })?;
+    let response: QuoteEndpointResponse = serde_json::from_slice(response_body).map_err(|e| {
+        AtlsVerificationError::Quote(format!("Failed to parse /tdx_quote response: {}", e))
+    })?;
 
     Ok(response.quote)
 }
@@ -681,4 +829,176 @@ fn parse_content_length(headers: &[u8]) -> Option<usize> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn collateral_with_marker(marker: &str) -> QuoteCollateralV3 {
+        QuoteCollateralV3 {
+            pck_crl_issuer_chain: marker.to_string(),
+            root_ca_crl: Vec::new(),
+            pck_crl: Vec::new(),
+            tcb_info_issuer_chain: String::new(),
+            tcb_info: String::new(),
+            tcb_info_signature: Vec::new(),
+            qe_identity_issuer_chain: String::new(),
+            qe_identity: String::new(),
+            qe_identity_signature: Vec::new(),
+            pck_certificate_chain: None,
+        }
+    }
+
+    fn cert_event(cert_der: &[u8]) -> EventLog {
+        let cert_hash = hex::encode(Sha256::digest(cert_der));
+        EventLog {
+            imr: 3,
+            event_type: 0x0800_0001,
+            digest: String::new(),
+            event: "New TLS Certificate".to_string(),
+            event_payload: hex::encode(cert_hash.as_bytes()),
+        }
+    }
+
+    fn test_verifier() -> DstackTDXVerifier {
+        DstackTDXVerifier::builder()
+            .disable_runtime_verification()
+            .build()
+            .unwrap()
+    }
+
+    #[test]
+    fn test_cert_event_match_latest_requires_most_recent_event() {
+        let verifier = test_verifier();
+        let session_cert = b"session-cert-der";
+        let rotated_cert = b"rotated-cert-der";
+        // The session cert was logged first; a rotation appended a newer event.
+        let events = vec![cert_event(session_cert), cert_event(rotated_cert)];
+
+        assert!(!verifier
+            .verify_cert_in_eventlog(session_cert, &events, CertEventMatch::Latest)
+            .unwrap());
+        assert!(verifier
+            .verify_cert_in_eventlog(rotated_cert, &events, CertEventMatch::Latest)
+            .unwrap());
+    }
+
+    #[test]
+    fn test_cert_event_match_any_accepts_earlier_session_cert() {
+        let verifier = test_verifier();
+        let session_cert = b"session-cert-der";
+        let rotated_cert = b"rotated-cert-der";
+        let events = vec![cert_event(session_cert), cert_event(rotated_cert)];
+
+        assert!(verifier
+            .verify_cert_in_eventlog(session_cert, &events, CertEventMatch::Any)
+            .unwrap());
+        // A cert that was never logged still fails.
+        assert!(!verifier
+            .verify_cert_in_eventlog(b"unknown-cert", &events, CertEventMatch::Any)
+            .unwrap());
+    }
+
+    #[test]
+    fn test_cert_event_match_without_cert_events() {
+        let verifier = test_verifier();
+        let events: Vec<EventLog> = Vec::new();
+        assert!(!verifier
+            .verify_cert_in_eventlog(b"cert", &events, CertEventMatch::Latest)
+            .unwrap());
+        assert!(!verifier
+            .verify_cert_in_eventlog(b"cert", &events, CertEventMatch::Any)
+            .unwrap());
+    }
+
+    #[test]
+    fn test_cert_event_malformed_payload_errors_in_both_modes() {
+        let verifier = test_verifier();
+        let mut event = cert_event(b"cert");
+        event.event_payload = "not-hex!".to_string();
+        let events = vec![event];
+
+        for mode in [CertEventMatch::Latest, CertEventMatch::Any] {
+            let err = verifier
+                .verify_cert_in_eventlog(b"cert", &events, mode)
+                .unwrap_err();
+            assert!(matches!(err, AtlsVerificationError::EventLogParse(_)));
+        }
+    }
+
+    // The cache is process-global and tests run in parallel, so every test
+    // uses its own unique keys.
+
+    #[test]
+    fn test_collateral_cache_hit_within_ttl() {
+        let key: CollateralCacheKey = (
+            "https://pccs.test/hit".to_string(),
+            "00906ED50000".to_string(),
+            "platform",
+        );
+        store_cached_collateral(key.clone(), collateral_with_marker("hit"), 1_000);
+        let hit = lookup_cached_collateral(&key, 1_000 + COLLATERAL_CACHE_TTL_SECS - 1);
+        assert_eq!(hit.map(|c| c.pck_crl_issuer_chain), Some("hit".to_string()));
+    }
+
+    #[test]
+    fn test_collateral_cache_key_isolation() {
+        let key_a: CollateralCacheKey = (
+            "https://pccs.test/iso-a".to_string(),
+            "00906ED50000".to_string(),
+            "platform",
+        );
+        let key_b: CollateralCacheKey = (
+            "https://pccs.test/iso-b".to_string(),
+            "00906ED50000".to_string(),
+            "platform",
+        );
+        store_cached_collateral(key_a, collateral_with_marker("a"), 1_000);
+        // Same FMSPC/CA but a different PCCS URL must never collide.
+        assert!(lookup_cached_collateral(&key_b, 1_000).is_none());
+    }
+
+    #[test]
+    fn test_collateral_cache_strips_per_machine_pck_chain() {
+        let key: CollateralCacheKey = (
+            "https://pccs.test/pck-strip".to_string(),
+            "00906ED50000".to_string(),
+            "platform",
+        );
+        // Collateral fetched while verifying machine A embeds A's PCK chain
+        // (dcap-qvl's get_collateral attaches the fetching quote's chain).
+        let mut collateral = collateral_with_marker("shared");
+        collateral.pck_certificate_chain = Some("machine-a-pck-chain".to_string());
+        store_cached_collateral(key.clone(), collateral, 1_000);
+
+        // A later cache hit (e.g. while verifying machine B's quote, or
+        // machine A after a PCK rotation) must not carry the stored chain:
+        // verify() would prefer it over the chain embedded in the quote
+        // under verification. With it stripped, verification falls back to
+        // the quote's own chain.
+        let hit = lookup_cached_collateral(&key, 1_000).expect("cache hit expected");
+        assert_eq!(hit.pck_certificate_chain, None);
+        // Machine-independent collateral is preserved.
+        assert_eq!(hit.pck_crl_issuer_chain, "shared");
+    }
+
+    #[test]
+    fn test_collateral_cache_expires_after_ttl() {
+        let key: CollateralCacheKey = (
+            "https://pccs.test/ttl".to_string(),
+            "00906ED50000".to_string(),
+            "processor",
+        );
+        store_cached_collateral(key.clone(), collateral_with_marker("old"), 5_000);
+        assert!(lookup_cached_collateral(&key, 5_000 + COLLATERAL_CACHE_TTL_SECS).is_none());
+
+        // An expired entry can be refreshed in place.
+        store_cached_collateral(key.clone(), collateral_with_marker("new"), 9_000_000);
+        let refreshed = lookup_cached_collateral(&key, 9_000_000);
+        assert_eq!(
+            refreshed.map(|c| c.pck_crl_issuer_chain),
+            Some("new".to_string())
+        );
+    }
 }

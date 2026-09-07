@@ -1,18 +1,27 @@
 use atlas_rs::{
-    atls_connect as core_atls_connect, dstack::merge_with_default_app_compose, Policy, Report,
-    TlsStream as CoreTlsStream,
+    atls_connect_with_reattester as core_atls_connect_with_reattester,
+    dstack::merge_with_default_app_compose, Policy, Reattester, Report, TlsStream as CoreTlsStream,
 };
 use once_cell::sync::Lazy;
-use pyo3::exceptions::{PyConnectionError, PyIOError, PyValueError};
+use pyo3::exceptions::{PyConnectionError, PyException, PyIOError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use rustls::crypto::aws_lc_rs::default_provider;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
+
+pyo3::create_exception!(
+    _atlas,
+    ReattestationError,
+    PyException,
+    "Re-attestation of an established aTLS connection failed; the connection \
+     has been closed (fail closed). Reconnecting performs a full fresh \
+     attestation."
+);
 
 // Lazily initialized tokio runtime shared across all connections.
 static RUNTIME: Lazy<tokio::runtime::Runtime> = Lazy::new(|| {
@@ -33,7 +42,17 @@ struct ConnectionState {
     reader: Arc<Mutex<ReadHalf<TlsStream>>>,
     writer: Arc<Mutex<WriteHalf<TlsStream>>>,
     attestation: Attestation,
+    reattester: Arc<Reattester>,
+    /// Set by `read()`, consumed by `write()`: a write directly following a
+    /// read marks a message boundary (sync HTTP/1.1 never interleaves reads
+    /// and writes within one message), which is the only safe point to
+    /// re-attest in-band.
+    saw_read: Arc<AtomicBool>,
 }
+
+/// Upper bound on one in-band re-attestation exchange (quote generation,
+/// possible collateral fetch, and DCAP verification included).
+const REATTEST_TIMEOUT_SECS: u64 = 30;
 
 static CONNECTIONS: Lazy<Mutex<HashMap<u64, ConnectionState>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
@@ -52,10 +71,7 @@ impl From<Report> for Attestation {
     fn from(report: Report) -> Self {
         match report {
             Report::Tdx(verified) => {
-                let measurement = verified
-                    .report
-                    .as_td10()
-                    .map(|td| hex::encode(td.mr_td));
+                let measurement = verified.report.as_td10().map(|td| hex::encode(td.mr_td));
                 Self {
                     trusted: true,
                     tee_type: "tdx".to_string(),
@@ -106,12 +122,12 @@ impl AtlsConnection {
         let conn_id = self.conn_id;
         py.allow_threads(|| {
             RUNTIME.block_on(async {
-                let reader = {
+                let (reader, saw_read) = {
                     let guard = CONNECTIONS.lock().await;
                     let state = guard
                         .get(&conn_id)
                         .ok_or_else(|| PyIOError::new_err("connection closed"))?;
-                    state.reader.clone()
+                    (state.reader.clone(), state.saw_read.clone())
                 };
 
                 let mut buf = vec![0u8; size];
@@ -119,6 +135,7 @@ impl AtlsConnection {
                 match reader.read(&mut buf).await {
                     Ok(0) => Ok(Vec::new()),
                     Ok(n) => {
+                        saw_read.store(true, Ordering::Release);
                         buf.truncate(n);
                         Ok(buf)
                     }
@@ -131,18 +148,38 @@ impl AtlsConnection {
     /// Write data to the attested TLS stream.
     ///
     /// Returns the number of bytes written. The GIL is released during the write.
+    ///
+    /// The first write after a read marks a message boundary; if the
+    /// attestation evidence is older than the policy's
+    /// ``reattestation_interval_secs`` at that point, the connection is
+    /// transparently re-attested in-band first. A failed re-attestation
+    /// closes the connection and raises ``ReattestationError`` (fail closed);
+    /// retrying on a new connection performs a full fresh attestation.
     fn write(&self, py: Python<'_>, data: Vec<u8>) -> PyResult<usize> {
         let conn_id = self.conn_id;
         let len = data.len();
         py.allow_threads(|| {
             RUNTIME.block_on(async {
-                let writer = {
+                let (writer, reader, reattester, saw_read) = {
                     let guard = CONNECTIONS.lock().await;
                     let state = guard
                         .get(&conn_id)
                         .ok_or_else(|| PyIOError::new_err("connection closed"))?;
-                    state.writer.clone()
+                    (
+                        state.writer.clone(),
+                        state.reader.clone(),
+                        state.reattester.clone(),
+                        state.saw_read.clone(),
+                    )
                 };
+
+                // Consume the boundary marker atomically so only the first
+                // write after a read can trigger re-attestation (later body
+                // chunk writes of the same request never do).
+                let at_boundary = saw_read.swap(false, Ordering::AcqRel);
+                if at_boundary && reattester.is_due() {
+                    reattest_locked(conn_id, &reader, &writer, &reattester).await?;
+                }
 
                 let mut writer = writer.lock().await;
                 writer
@@ -200,6 +237,64 @@ impl AtlsConnection {
     }
 }
 
+/// Re-attest in-band over the recombined stream halves, failing closed.
+///
+/// Takes both half-locks (writer then reader; only this function ever holds
+/// both) so no other I/O can interleave with the quote exchange, re-checks
+/// due-ness under the locks (a concurrent caller may have already
+/// re-attested), and bounds the exchange with a timeout. On success the
+/// stored attestation is refreshed; on failure or timeout the connection is
+/// shut down and removed, and ``ReattestationError`` is raised.
+async fn reattest_locked(
+    conn_id: u64,
+    reader: &Arc<Mutex<ReadHalf<TlsStream>>>,
+    writer: &Arc<Mutex<WriteHalf<TlsStream>>>,
+    reattester: &Reattester,
+) -> PyResult<()> {
+    let mut writer_guard = writer.lock().await;
+    let mut reader_guard = reader.lock().await;
+
+    if !reattester.is_due() {
+        return Ok(());
+    }
+
+    let mut joined = tokio::io::join(&mut *reader_guard, &mut *writer_guard);
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(REATTEST_TIMEOUT_SECS),
+        reattester.reattest(&mut joined),
+    )
+    .await;
+
+    match result {
+        Ok(Ok(report)) => {
+            drop(reader_guard);
+            drop(writer_guard);
+            if let Some(state) = CONNECTIONS.lock().await.get_mut(&conn_id) {
+                state.attestation = report.into();
+            }
+            Ok(())
+        }
+        Ok(Err(e)) => {
+            drop(reader_guard);
+            let _ = writer_guard.shutdown().await;
+            drop(writer_guard);
+            CONNECTIONS.lock().await.remove(&conn_id);
+            Err(ReattestationError::new_err(format!("{e}")))
+        }
+        Err(_elapsed) => {
+            // The exchange was cut off mid-flight; the stream state is
+            // undefined, so the connection cannot be reused.
+            drop(reader_guard);
+            let _ = writer_guard.shutdown().await;
+            drop(writer_guard);
+            CONNECTIONS.lock().await.remove(&conn_id);
+            Err(ReattestationError::new_err(format!(
+                "re-attestation failed: timed out after {REATTEST_TIMEOUT_SECS}s"
+            )))
+        }
+    }
+}
+
 /// Establish an attested TLS connection to a TEE endpoint.
 ///
 /// Creates a TCP connection, performs TLS handshake, and runs attestation
@@ -242,10 +337,14 @@ fn atls_connect(
                 .await
                 .map_err(|e| PyConnectionError::new_err(format!("tcp connect failed: {e}")))?;
 
-            let (tls, report) =
-                core_atls_connect(tcp, &server_name, policy, Some(vec!["http/1.1".into()]))
-                    .await
-                    .map_err(|e| PyIOError::new_err(format!("atls handshake failed: {e}")))?;
+            let (tls, report, reattester) = core_atls_connect_with_reattester(
+                tcp,
+                &server_name,
+                policy,
+                Some(vec!["http/1.1".into()]),
+            )
+            .await
+            .map_err(|e| PyIOError::new_err(format!("atls handshake failed: {e}")))?;
 
             let conn_id = NEXT_CONN_ID.fetch_add(1, Ordering::SeqCst);
             let (reader, writer) = tokio::io::split(tls);
@@ -258,6 +357,8 @@ fn atls_connect(
                     reader: Arc::new(Mutex::new(reader)),
                     writer: Arc::new(Mutex::new(writer)),
                     attestation,
+                    reattester: Arc::new(reattester),
+                    saw_read: Arc::new(AtomicBool::new(false)),
                 },
             );
 
@@ -290,5 +391,9 @@ fn _atlas(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<AtlsConnection>()?;
     m.add_function(wrap_pyfunction!(atls_connect, m)?)?;
     m.add_function(wrap_pyfunction!(merge_with_default_app_compose_py, m)?)?;
+    m.add(
+        "ReattestationError",
+        m.py().get_type::<ReattestationError>(),
+    )?;
     Ok(())
 }

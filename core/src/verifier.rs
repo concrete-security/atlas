@@ -156,6 +156,68 @@ pub enum Verifier {
     DstackTdx(crate::dstack::DstackTDXVerifier),
 }
 
+impl Verifier {
+    /// Configured re-attestation interval in seconds (0 = disabled).
+    pub fn reattestation_interval_secs(&self) -> u64 {
+        match self {
+            Verifier::DstackTdx(v) => v.reattestation_interval_secs(),
+        }
+    }
+
+    /// Re-verify an established session in-band over `stream`.
+    ///
+    /// Same pipeline as [`AtlsVerifier::verify`], but the session certificate
+    /// may match *any* certificate event in the log: the session cert stays
+    /// valid for the connection lifetime even if the attester has since
+    /// rotated to a new certificate (rotation appends a new event).
+    pub(crate) async fn reverify<S>(
+        &self,
+        stream: &mut S,
+        peer_cert: &[u8],
+        session_ekm: &[u8],
+        hostname: &str,
+    ) -> Result<Report, AtlsVerificationError>
+    where
+        S: AsyncByteStream,
+    {
+        match self {
+            Verifier::DstackTdx(v) => {
+                v.verify_with_mode(
+                    stream,
+                    peer_cert,
+                    session_ekm,
+                    hostname,
+                    crate::dstack::CertEventMatch::Any,
+                )
+                .await
+            }
+        }
+    }
+
+    /// Appraise a `/tdx_quote` response body fetched over a caller-owned
+    /// transport, using re-attestation certificate matching.
+    pub(crate) async fn appraise_quote_body(
+        &self,
+        body: &[u8],
+        nonce: &[u8; 32],
+        peer_cert: &[u8],
+        session_ekm: &[u8],
+    ) -> Result<Report, AtlsVerificationError> {
+        match self {
+            Verifier::DstackTdx(v) => {
+                v.appraise_quote_body(
+                    body,
+                    nonce,
+                    peer_cert,
+                    session_ekm,
+                    crate::dstack::CertEventMatch::Any,
+                )
+                .await
+            }
+        }
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 impl AtlsVerifier for Verifier {
     fn verify<S>(

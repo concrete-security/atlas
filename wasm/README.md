@@ -183,6 +183,24 @@ const fetch = createAtlsFetch({
 
 For complete policy field descriptions and verification flow, see [core/README.md#policy-configuration](../core/README.md#policy-configuration).
 
+### Periodic Re-attestation
+
+Cached connections are transparently re-attested by `createAtlsFetch` when
+their attestation evidence is older than the policy's
+`reattestation_interval_secs` (default `300`; set `0` to disable completely,
+non-zero values below `30` are rejected). Re-attestation repeats the full
+`/tdx_quote` verification over the live session with a fresh nonce bound to
+the same session EKM, before the request is dispatched. On failure the
+connection is dropped and a fresh, fully attested one is established (fail
+closed). `onAttestation` fires on each re-attestation, and
+`response.attestation` always reflects the evidence backing that request.
+
+With `AtlsHttp` directly, drive it yourself: check `isReattestationDue()`
+while the connection is idle (`isReady()`), call `await http.reattest()`, and
+`close()` the connection if it throws. `AttestedStream` does not support
+re-attestation (the caller owns the protocol framing) — reconnect
+periodically instead; every connect performs a full attestation.
+
 ## Protocol Details
 
 Browser WASM bindings follow the same aTLS protocol as other platforms.

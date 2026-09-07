@@ -4,7 +4,8 @@
  * Run with: npm test
  */
 
-import { createAtlsAgent, createAtlsFetch, mergeWithDefaultAppCompose } from "./atls-fetch.js"
+import { createAtlsAgent, createAtlsFetch, mergeWithDefaultAppCompose, _internals } from "./atls-fetch.js"
+import { EventEmitter } from "events"
 import { createRequire } from "module"
 import { readFileSync } from "fs"
 import { dirname, join } from "path"
@@ -263,6 +264,190 @@ const tests = [
     assert(typeof mainExports.createAtlsFetch === "function", "createAtlsFetch not exported")
     assert(typeof mainExports.createAtlsAgent === "function", "createAtlsAgent not exported")
     assert(typeof mainExports.mergeWithDefaultAppCompose === "function", "mergeWithDefaultAppCompose not exported")
+  }),
+
+  test("Native binding exposes socketReattestIfDue", async () => {
+    assert(typeof binding.socketReattestIfDue === "function", "socketReattestIfDue not available")
+  }),
+
+  test("armEvidenceExpiry: interval 0 disables expiry", async () => {
+    const { armEvidenceExpiry, atlsEvidenceExpired } = _internals
+
+    const disabled = { once() {}, destroy() {} }
+    armEvidenceExpiry(disabled, 0)
+    assert(disabled.atlsExpiresAt === Infinity, "interval 0 must mean no expiry")
+    assert(atlsEvidenceExpired(disabled) === false, "disabled socket never expires")
+
+    const armed = { once() {}, destroy() {} }
+    armEvidenceExpiry(armed, 300)
+    assert(armed.atlsExpiresAt > Date.now(), "expiry must be in the future")
+    assert(atlsEvidenceExpired(armed) === false, "fresh evidence must not be expired")
+  }),
+
+  test("AtlsAgent retires sockets with expired attestation evidence", async () => {
+    const agent = createAtlsAgent({ target: "example.com:443", policy: DEV_POLICY })
+    // Real EventEmitter so Node's Agent internals (listener bookkeeping)
+    // work; socket-tuning methods stubbed like createAtlsDuplex does.
+    const fakeSocket = () => {
+      const s = new EventEmitter()
+      s.atlsIdle = false
+      s.setKeepAlive = () => s
+      s.setTimeout = () => s
+      s.ref = () => s
+      s.unref = () => s
+      s.destroy = () => s
+      return s
+    }
+
+    // Expired: never pooled again.
+    const expired = fakeSocket()
+    expired.atlsExpiresAt = Date.now() - 1
+    assert(agent.keepSocketAlive(expired) === false, "expired socket must be retired")
+    assert(expired.atlsIdle === true, "keepSocketAlive should mark the socket idle")
+
+    // Flagged expired while busy: retired when the response completes.
+    const flagged = fakeSocket()
+    flagged.atlsExpiresAt = Date.now() + 60_000
+    flagged.atlsExpired = true
+    assert(agent.keepSocketAlive(flagged) === false, "flagged socket must be retired")
+
+    // Fresh: pooled normally.
+    const fresh = fakeSocket()
+    fresh.atlsExpiresAt = Date.now() + 60_000
+    assert(agent.keepSocketAlive(fresh) === true, "fresh socket must be kept alive")
+
+    // reuseSocket clears the idle marker.
+    fresh.atlsIdle = true
+    agent.reuseSocket(fresh, {})
+    assert(fresh.atlsIdle === false, "reuseSocket should mark the socket busy")
+
+    agent.destroy()
+  }),
+
+  test("AtlsAgent denies reuse of sockets with expired evidence", async () => {
+    const agent = createAtlsAgent({ target: "example.com:443", policy: DEV_POLICY })
+
+    const socket = new EventEmitter()
+    socket.atlsExpiresAt = Date.now() - 1
+    socket.atlsIdle = true
+    let destroyed = false
+    socket.destroy = () => { destroyed = true; return socket }
+    socket.setKeepAlive = () => socket
+    socket.setTimeout = () => socket
+    socket.ref = () => socket
+    socket.unref = () => socket
+
+    let reqErr = null
+    const fakeReq = { destroy(err) { reqErr = err } }
+
+    agent.reuseSocket(socket, fakeReq)
+
+    assert(destroyed, "expired socket must be destroyed at reuse")
+    assert(reqErr, "the denied request must receive an error")
+    assert(reqErr.code === "ATLS_EVIDENCE_EXPIRED", `wrong error code: ${reqErr?.code}`)
+    agent.destroy()
+  }),
+
+  test("armEvidenceExpiry arms a chained timer beyond the setTimeout clamp", async () => {
+    const { armEvidenceExpiry, atlsEvidenceExpired } = _internals
+
+    const socket = new EventEmitter()
+    socket.destroy = () => socket
+    // Interval beyond the 2^31-1 ms setTimeout clamp (~24.8 days): a single
+    // oversized setTimeout would fire after ~1 ms; the chained timer must
+    // still be armed instead of skipped.
+    const intervalSecs = Math.ceil((0x7fffffff + 1) / 1000) + 60
+    armEvidenceExpiry(socket, intervalSecs)
+
+    assert(Number.isFinite(socket.atlsExpiresAt), "expiry deadline must be tracked")
+    assert(socket.listenerCount("close") === 1, "timer cleanup listener must be armed")
+    assert(atlsEvidenceExpired(socket) === false, "not expired yet")
+
+    // A socket past its deadline (e.g. expired while idle) reads as expired
+    // regardless of the timer, which reuseSocket enforces at dispatch.
+    socket.atlsExpiresAt = Date.now() - 1
+    assert(atlsEvidenceExpired(socket) === true, "past deadline must read expired")
+
+    socket.emit("close") // clears the chained timer
+  }),
+
+  test("Bun pool re-attests reused connections and refreshes attestation", async () => {
+    const { createConnectionPool } = _internals
+    const events = []
+    const freshAttestation = { trusted: true, teeType: "tdx", tcbStatus: "UpToDate", advisoryIds: [] }
+    let connects = 0
+    const pool = createConnectionPool(
+      { hostPort: "example.com:443" },
+      "example.com",
+      DEV_POLICY,
+      (att) => events.push(att),
+      {
+        atlsConnect: async () => ({ socketId: ++connects, attestation: { trusted: true } }),
+        socketReattestIfDue: async () => freshAttestation,
+        socketDestroy: () => {},
+      },
+    )
+
+    const first = await pool.acquire()
+    assert(first.socketId === 1, "first acquire should connect")
+    pool.release(first.socketId)
+
+    const second = await pool.acquire()
+    assert(second.socketId === 1, "connection should be reused")
+    assert(second.attestation === freshAttestation, "attestation should be refreshed")
+    assert(events.length === 2, "onAttestation should fire on connect and on re-attestation")
+    assert(events[1] === freshAttestation, "re-attestation result should reach onAttestation")
+  }),
+
+  test("Bun pool skips re-attestation when evidence is fresh", async () => {
+    const { createConnectionPool } = _internals
+    const events = []
+    const initialAttestation = { trusted: true }
+    const pool = createConnectionPool(
+      { hostPort: "example.com:443" },
+      "example.com",
+      DEV_POLICY,
+      (att) => events.push(att),
+      {
+        atlsConnect: async () => ({ socketId: 7, attestation: initialAttestation }),
+        socketReattestIfDue: async () => null, // not due
+        socketDestroy: () => {},
+      },
+    )
+
+    const first = await pool.acquire()
+    pool.release(first.socketId)
+    const second = await pool.acquire()
+
+    assert(second.socketId === 7, "connection should be reused")
+    assert(second.attestation === initialAttestation, "attestation should be unchanged")
+    assert(events.length === 1, "onAttestation should only fire for the initial connect")
+  }),
+
+  test("Bun pool reconnects when re-attestation fails", async () => {
+    const { createConnectionPool } = _internals
+    const destroyed = []
+    let connects = 0
+    const pool = createConnectionPool(
+      { hostPort: "example.com:443" },
+      "example.com",
+      DEV_POLICY,
+      null,
+      {
+        atlsConnect: async () => ({ socketId: ++connects, attestation: {} }),
+        socketReattestIfDue: async () => {
+          throw new Error("reattestation failed: certificate not in event log")
+        },
+        socketDestroy: (id) => destroyed.push(id),
+      },
+    )
+
+    const first = await pool.acquire()
+    pool.release(first.socketId)
+
+    const second = await pool.acquire()
+    assert(second.socketId === 2, "a fresh, fully attested connection should be opened")
+    assert(destroyed.includes(1), "the failed connection should be destroyed")
   }),
 
   // Skipped: live enclave vllm.concrete-security.com decommissioned. Repoint to a

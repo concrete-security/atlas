@@ -7,6 +7,7 @@ use log::debug;
 
 use crate::error::AtlsVerificationError;
 use crate::policy::Policy;
+use crate::reattest::Reattester;
 use crate::verifier::{AsyncByteStream, Report};
 use crate::AtlsVerifier;
 use rustls::pki_types::ServerName;
@@ -140,6 +141,51 @@ pub async fn atls_connect<S>(
 where
     S: AsyncByteStream + 'static,
 {
+    let (tls_stream, report, _reattester) =
+        atls_connect_with_reattester(stream, server_name, policy, alpn).await?;
+    Ok((tls_stream, report))
+}
+
+/// Establish a verified aTLS connection and return a re-attestation handle.
+///
+/// Identical to [`atls_connect`], but additionally returns a
+/// [`Reattester`] retaining the verifier, session peer certificate, and
+/// session EKM, so the connection can be transparently re-verified during
+/// its lifetime. See [`crate::reattest`] for usage and safety requirements.
+///
+/// The re-attestation interval comes from the policy
+/// (`reattestation_interval_secs`, default 300 seconds; 0 disables
+/// re-attestation, in which case [`Reattester::is_due`] is always false).
+///
+/// # Example
+///
+/// ```no_run
+/// use atlas_rs::{atls_connect_with_reattester, Policy, DstackTdxPolicy};
+///
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// let tcp = tokio::net::TcpStream::connect("tee.example.com:443").await?;
+/// let policy = Policy::DstackTdx(DstackTdxPolicy::dev());
+/// let (mut tls_stream, report, reattester) =
+///     atls_connect_with_reattester(tcp, "tee.example.com", policy, None).await?;
+///
+/// // ... use the connection ...
+///
+/// // Later, at a message boundary (no request/response in flight):
+/// if reattester.is_due() {
+///     let fresh_report = reattester.reattest(&mut tls_stream).await?;
+/// }
+/// # Ok(())
+/// # }
+/// ```
+pub async fn atls_connect_with_reattester<S>(
+    stream: S,
+    server_name: &str,
+    policy: Policy,
+    alpn: Option<Vec<String>>,
+) -> Result<(TlsStream<S>, Report, Reattester), AtlsVerificationError>
+where
+    S: AsyncByteStream + 'static,
+{
     // Initialize logging (idempotent, only runs once)
     crate::logging::init();
 
@@ -147,11 +193,23 @@ where
 
     debug!("Starting attestation verification");
     let verifier = policy.into_verifier()?;
+    // Anchor the evidence age at the moment verification starts (nonce
+    // issuance), not when it completes, so a slow exchange cannot overstate
+    // freshness.
+    let verified_at_millis = crate::time::mono_millis();
     let report = verifier
         .verify(&mut tls_stream, &peer_cert, &session_ekm, server_name)
         .await?;
 
     debug!("Attestation verification successful");
 
-    Ok((tls_stream, report))
+    let reattester = Reattester::new_at(
+        verifier,
+        peer_cert,
+        session_ekm,
+        server_name.to_string(),
+        verified_at_millis,
+    );
+
+    Ok((tls_stream, report, reattester))
 }

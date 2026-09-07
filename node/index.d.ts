@@ -13,6 +13,11 @@ export interface JsAttestation {
 export interface JsAtlsConnection {
   socketId: number
   attestation: JsAttestation
+  /**
+   * Max age (seconds) of attestation evidence before transparent
+   * re-attestation, from the policy. 0 means re-attestation is disabled.
+   */
+  reattestationIntervalSecs: number
 }
 /**
  * Merge a user-provided app_compose with default values.
@@ -24,6 +29,21 @@ export interface JsAtlsConnection {
 export declare function mergeWithDefaultAppCompose(userCompose: any): any
 /** Establish an aTLS connection and return a socket handle with attestation result. */
 export declare function atlsConnect(targetHost: string, serverName: string, policyJson: any): Promise<JsAtlsConnection>
+/**
+ * Re-attest the connection in-band if its attestation evidence is older
+ * than the policy's `reattestation_interval_secs`.
+ *
+ * Must only be called while the connection is quiescent (no request or
+ * response in flight): the exchange sends a `POST /tdx_quote` on the live
+ * TLS stream and reads its response, holding both socket-half locks for the
+ * duration so concurrent reads/writes block instead of interleaving.
+ *
+ * Returns the fresh attestation when re-attestation ran, or `null` when the
+ * evidence was still fresh (or re-attestation is disabled). On failure the
+ * socket is torn down (fail closed) and an error is thrown; reconnecting
+ * performs a full fresh attestation.
+ */
+export declare function socketReattestIfDue(socketId: number): Promise<JsAttestation | null>
 /** Read data from socket */
 export declare function socketRead(socketId: number, size?: number | undefined | null): Promise<Buffer>
 /** Write data to socket */

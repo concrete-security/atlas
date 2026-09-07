@@ -39,6 +39,7 @@ def dstack_tdx_policy(
     app_compose_allowed_envs: Optional[list[str]] = None,
     pccs_url: Optional[str] = None,
     cache_collateral: bool = False,
+    reattestation_interval_secs: Optional[int] = None,
 ) -> dict:
     """Build a DstackTdx attestation policy dict.
 
@@ -63,6 +64,11 @@ def dstack_tdx_policy(
             app_compose.
         pccs_url: PCCS URL for Intel collateral fetching.
         cache_collateral: Cache Intel collateral between verifications.
+        reattestation_interval_secs: Max age (seconds) of attestation
+            evidence before the connection is transparently re-attested.
+            When omitted, the Rust core default of 300 seconds applies.
+            Pass ``0`` to disable re-attestation completely; non-zero
+            values below 30 are rejected by the core.
 
     Returns:
         Policy dict like ``{"type": "dstack_tdx", ...}``.
@@ -88,6 +94,9 @@ def dstack_tdx_policy(
 
     if pccs_url is not None:
         policy["pccs_url"] = pccs_url
+
+    if reattestation_interval_secs is not None:
+        policy["reattestation_interval_secs"] = reattestation_interval_secs
 
     if not disable_runtime_verification:
         # Build app_compose

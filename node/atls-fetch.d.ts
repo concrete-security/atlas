@@ -48,6 +48,12 @@ export interface DstackTdxPolicy {
   app_compose?: AppCompose
   /** Allowed TCB status values (default: ["UpToDate"]) */
   allowed_tcb_status?: string[]
+  /**
+   * Max age (seconds) of attestation evidence before transparent
+   * re-attestation of the connection. Default: 300. Set to 0 to disable
+   * re-attestation completely; non-zero values below 30 are rejected.
+   */
+  reattestation_interval_secs?: number
   /** PCCS URL for collateral fetching */
   pccs_url?: string
   /** Cache collateral to avoid repeated fetches */

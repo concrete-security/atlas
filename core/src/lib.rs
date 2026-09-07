@@ -86,16 +86,21 @@ pub mod dstack;
 pub mod error;
 pub mod logging;
 pub mod policy;
+pub mod reattest;
 pub mod tdx;
+pub(crate) mod time;
 pub mod verifier;
 
 // High-level API
-pub use connect::{atls_connect, TlsStream};
+pub use connect::{atls_connect, atls_connect_with_reattester, TlsStream};
 pub use policy::Policy;
+pub use reattest::{ReattestRequest, Reattester};
 
 // Dstack-specific (backward compatible re-exports)
 // NOTE: compose_hash NOT exposed at root - access via dstack::compose_hash
-pub use dstack::{DstackTDXVerifier, DstackTDXVerifierBuilder, DstackTDXVerifierConfig, DstackTdxPolicy};
+pub use dstack::{
+    DstackTDXVerifier, DstackTDXVerifierBuilder, DstackTDXVerifierConfig, DstackTdxPolicy,
+};
 
 // Generic TDX
 pub use tdx::{ExpectedBootchain, TCB_STATUS_LIST};
@@ -103,8 +108,8 @@ pub use tdx::{ExpectedBootchain, TCB_STATUS_LIST};
 // Low-level API
 pub use error::AtlsVerificationError;
 pub use verifier::{
-    AsyncByteStream, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, IntoVerifier, AtlsVerifier,
-    Report, Verifier,
+    AsyncByteStream, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, AtlsVerifier,
+    IntoVerifier, Report, Verifier,
 };
 
 // Re-export VerifiedReport from dcap-qvl for bindings

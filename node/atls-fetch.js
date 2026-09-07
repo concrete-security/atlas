@@ -73,6 +73,7 @@ const {
   socketWrite,
   socketClose,
   socketDestroy,
+  socketReattestIfDue,
   mergeWithDefaultAppCompose,
 } = require("./index.cjs")
 
@@ -249,8 +250,66 @@ function createAtlsDuplex(socketId, attestation, meta) {
   return duplex
 }
 
+// Node's setTimeout treats delays above 2^31-1 ms as 1 ms; skip the timer for
+// such far-out expiries (keepSocketAlive still checks the wall clock).
+const MAX_TIMEOUT_MS = 0x7fffffff
+
+/**
+ * Stamp attestation-evidence expiry bookkeeping on an agent socket and arm an
+ * unref'd timer that retires it if it expires while idle in the pool.
+ *
+ * The https.Agent path cannot re-attest in-band: Node's HTTP machinery keeps
+ * a read pending on pooled sockets, which would swallow the quote response.
+ * Expired sockets are retired instead — the next request transparently opens
+ * a fresh connection, which performs a full fresh attestation.
+ */
+function armEvidenceExpiry(socket, intervalSecs) {
+  socket.atlsVerifiedAt = Date.now()
+  socket.atlsExpiresAt =
+    intervalSecs > 0 ? socket.atlsVerifiedAt + intervalSecs * 1000 : Infinity
+  socket.atlsIdle = false
+  if (socket.atlsExpiresAt === Infinity) return
+
+  // Chain timers for expiries beyond Node's setTimeout clamp (2^31 - 1 ms):
+  // a single oversized setTimeout would fire after ~1 ms instead of waiting.
+  let timer = null
+  const arm = () => {
+    const remaining = socket.atlsExpiresAt - Date.now()
+    if (remaining > MAX_TIMEOUT_MS) {
+      timer = setTimeout(arm, MAX_TIMEOUT_MS)
+    } else {
+      timer = setTimeout(() => {
+        if (socket.atlsIdle) {
+          debug("agent:destroy-idle-expired", { expiresAt: socket.atlsExpiresAt })
+          socket.destroy()
+        } else {
+          // Busy with an in-flight response; keepSocketAlive() retires it when
+          // the response completes.
+          socket.atlsExpired = true
+        }
+      }, Math.max(remaining, 0))
+    }
+    timer.unref?.()
+  }
+  arm()
+  socket.once("close", () => clearTimeout(timer))
+}
+
+/** Error code used when a request is denied because the pooled socket's attestation evidence expired. */
+const ATLS_EVIDENCE_EXPIRED = "ATLS_EVIDENCE_EXPIRED"
+
+/** Whether an agent socket's attestation evidence has expired. */
+function atlsEvidenceExpired(socket) {
+  return socket.atlsExpired === true || Date.now() >= (socket.atlsExpiresAt ?? Infinity)
+}
+
 /**
  * Create an https.Agent that establishes aTLS connections
+ *
+ * Attestation evidence expires after the policy's
+ * `reattestation_interval_secs` (default 300; 0 disables): expired sockets
+ * are never reused and the next request reconnects with a fresh, fully
+ * attested connection. `onAttestation` fires again for each new connection.
  *
  * @param {AtlsAgentOptions} options - Options object with target and policy
  * @returns {Agent} An https.Agent that uses aTLS sockets
@@ -302,8 +361,9 @@ export function createAtlsAgent(options) {
   class AtlsAgent extends Agent {
     createConnection(connectOptions, callback) {
       atlsConnect(parsed.hostPort, effectiveServerName, policy)
-        .then(({ socketId, attestation }) => {
+        .then(({ socketId, attestation, reattestationIntervalSecs }) => {
           const socket = createAtlsDuplex(socketId, attestation, parsed)
+          armEvidenceExpiry(socket, reattestationIntervalSecs)
 
           // Call user's attestation callback before returning socket
           if (onAttestation) {
@@ -318,6 +378,38 @@ export function createAtlsAgent(options) {
           callback(null, socket)
         })
         .catch(callback)
+    }
+
+    keepSocketAlive(socket) {
+      socket.atlsIdle = true
+      if (atlsEvidenceExpired(socket)) {
+        // Retire instead of pooling: the next request reconnects, which
+        // performs a full fresh attestation (fail closed by construction).
+        debug("agent:retire-expired", { expiresAt: socket.atlsExpiresAt })
+        return false
+      }
+      return super.keepSocketAlive(socket)
+    }
+
+    reuseSocket(socket, req) {
+      if (atlsEvidenceExpired(socket)) {
+        // Fail closed: never dispatch a request on expired evidence. This
+        // covers sockets that expired while idle in the pool (between the
+        // unref'd timer firing and reuse, or if the process was suspended).
+        // The denied request carries a tagged error; createAtlsFetch retries
+        // it once on a fresh, fully attested connection.
+        debug("agent:deny-expired-reuse", { expiresAt: socket.atlsExpiresAt })
+        socket.atlsExpired = true
+        const err = new Error(
+          "aTLS attestation evidence expired; reconnect required"
+        )
+        err.code = ATLS_EVIDENCE_EXPIRED
+        socket.destroy()
+        req.destroy(err)
+        return
+      }
+      socket.atlsIdle = false
+      super.reuseSocket(socket, req)
     }
   }
 
@@ -337,12 +429,26 @@ const MAX_HEADER_SIZE = 64 * 1024
 /**
  * Connection pool (single cached connection + overflow).
  * Avoids repeating the expensive aTLS handshake on every request.
+ *
+ * Reused connections are transparently re-attested in-band when their
+ * attestation evidence is older than the policy's
+ * `reattestation_interval_secs` (a released connection is quiescent, so the
+ * quote exchange cannot interleave with request traffic). On re-attestation
+ * failure the connection is destroyed and a fresh one — fully attested — is
+ * opened instead (fail closed).
+ *
+ * `deps` is a test seam: production callers omit it.
  */
-function createConnectionPool(parsed, serverName, policy, onAttestation) {
+function createConnectionPool(parsed, serverName, policy, onAttestation, deps = {}) {
+  const {
+    atlsConnect: connectFn = atlsConnect,
+    socketReattestIfDue: reattestFn = socketReattestIfDue,
+    socketDestroy: destroyFn = socketDestroy,
+  } = deps
   let cached = null // { socketId, busy, lastUsed, attestation }
 
   async function connect() {
-    const { socketId, attestation } = await atlsConnect(
+    const { socketId, attestation } = await connectFn(
       parsed.hostPort,
       serverName,
       policy,
@@ -361,7 +467,24 @@ function createConnectionPool(parsed, serverName, policy, onAttestation) {
       ) {
         debug("pool:reuse", { socketId: cached.socketId })
         cached.busy = true
-        return cached
+        try {
+          const attestation = await reattestFn(cached.socketId)
+          if (attestation) {
+            debug("pool:reattested", { socketId: cached.socketId })
+            cached.attestation = attestation
+            if (onAttestation) onAttestation(attestation)
+          }
+          return cached
+        } catch (err) {
+          // Fail closed: drop the connection and fall through to a fresh
+          // connect below, which performs a full attestation.
+          debug("pool:reattest-failed", {
+            socketId: cached.socketId,
+            err: err?.message,
+          })
+          try { destroyFn(cached.socketId) } catch (_) {}
+          cached = null
+        }
       }
       // Busy → open overflow connection (don't touch cached)
       if (cached && cached.busy) {
@@ -371,7 +494,7 @@ function createConnectionPool(parsed, serverName, policy, onAttestation) {
       // Stale or missing — (re)connect
       if (cached) {
         debug("pool:stale", { socketId: cached.socketId })
-        try { socketDestroy(cached.socketId) } catch (_) {}
+        try { destroyFn(cached.socketId) } catch (_) {}
         cached = null
       }
       cached = await connect()
@@ -386,13 +509,13 @@ function createConnectionPool(parsed, serverName, policy, onAttestation) {
       } else {
         // overflow connection — close it
         debug("pool:release:overflow", { socketId })
-        try { socketDestroy(socketId) } catch (_) {}
+        try { destroyFn(socketId) } catch (_) {}
       }
     },
 
     invalidate(socketId) {
       debug("pool:invalidate", { socketId })
-      try { socketDestroy(socketId) } catch (_) {}
+      try { destroyFn(socketId) } catch (_) {}
       if (cached && cached.socketId === socketId) cached = null
     },
   }
@@ -798,7 +921,7 @@ function createAtlsFetchNode(options) {
       contentLength,
     })
 
-    return new Promise((resolve, reject) => {
+    const attempt = (isRetry) => new Promise((resolve, reject) => {
       const reqOptions = {
         hostname: parsed.host,
         port: parseInt(parsed.port),
@@ -830,7 +953,23 @@ function createAtlsFetchNode(options) {
         resolve(response)
       })
 
-      req.on("error", reject)
+      req.on("error", (err) => {
+        // A pooled socket was denied at dispatch because its attestation
+        // evidence expired: transparently retry once — the expired socket is
+        // gone, so the retry opens a fresh, fully attested connection.
+        // Stream/iterable bodies cannot be replayed, so those surface the
+        // error instead.
+        if (
+          !isRetry &&
+          err?.code === ATLS_EVIDENCE_EXPIRED &&
+          (!body || kind === "buffer")
+        ) {
+          debug("fetch:retry-expired-evidence")
+          resolve(attempt(true))
+          return
+        }
+        reject(err)
+      })
 
       if (init.signal) {
         if (init.signal.aborted) {
@@ -882,6 +1021,8 @@ function createAtlsFetchNode(options) {
           req.end()
       }
     })
+
+    return attempt(false)
   }
 }
 
@@ -1050,5 +1191,8 @@ function normalizeBody(body) {
 
 // Re-export merge utility for users to construct app_compose
 export { mergeWithDefaultAppCompose }
+
+// Internal seams exposed for offline tests only — not part of the public API.
+export const _internals = { createConnectionPool, armEvidenceExpiry, atlsEvidenceExpired }
 
 export default createAtlsAgent

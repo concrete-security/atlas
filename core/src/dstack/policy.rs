@@ -9,8 +9,21 @@ use serde::{Deserialize, Serialize};
 /// Default PCCS URL for TDX collateral fetching.
 pub const DEFAULT_PCCS_URL: &str = "https://pccs.phala.network/tdx/certification/v4";
 
+/// Default re-attestation interval in seconds (5 minutes).
+pub const DEFAULT_REATTESTATION_INTERVAL_SECS: u64 = 300;
+
+/// Minimum allowed non-zero re-attestation interval in seconds.
+///
+/// Protects attesters from quote-generation storms caused by overly
+/// aggressive intervals. Use 0 to disable re-attestation entirely.
+pub const MIN_REATTESTATION_INTERVAL_SECS: u64 = 30;
+
 fn default_pccs_url() -> Option<String> {
     Some(DEFAULT_PCCS_URL.to_string())
+}
+
+fn default_reattestation_interval_secs() -> u64 {
+    DEFAULT_REATTESTATION_INTERVAL_SECS
 }
 
 fn default_allowed_tcb_status() -> Vec<String> {
@@ -43,6 +56,16 @@ pub struct DstackTdxPolicy {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grace_period: Option<u64>,
 
+    /// Maximum age (seconds) of attestation evidence before the client
+    /// transparently re-attests the connection at the next message boundary.
+    ///
+    /// Re-attestation repeats the full verification (fresh nonce, same
+    /// session EKM) over the live connection. Defaults to 300 (5 minutes).
+    /// Set to 0 to disable re-attestation completely. Non-zero values below
+    /// 30 seconds are rejected.
+    #[serde(default = "default_reattestation_interval_secs")]
+    pub reattestation_interval_secs: u64,
+
     /// PCCS URL for collateral fetching.
     /// Defaults to `https://pccs.phala.network/tdx/certification/v4`.
     #[serde(default = "default_pccs_url", skip_serializing_if = "Option::is_none")]
@@ -69,6 +92,7 @@ impl Default for DstackTdxPolicy {
             os_image_hash: None,
             allowed_tcb_status: default_allowed_tcb_status(),
             grace_period: None,
+            reattestation_interval_secs: DEFAULT_REATTESTATION_INTERVAL_SECS,
             pccs_url: default_pccs_url(),
             cache_collateral: false,
             disable_runtime_verification: false,
@@ -78,7 +102,9 @@ impl Default for DstackTdxPolicy {
 
 /// Check if a string is a valid lowercase hex string.
 fn is_valid_hex(s: &str) -> bool {
-    !s.is_empty() && s.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+    !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
 }
 
 impl DstackTdxPolicy {
@@ -105,6 +131,7 @@ impl DstackTdxPolicy {
     /// - `os_image_hash` is a valid hex string (if provided)
     /// - `expected_bootchain` fields are valid hex strings (if provided)
     /// - `grace_period` requires `allowed_tcb_status` to include `OutOfDate`
+    /// - `reattestation_interval_secs` is 0 (disabled) or >= 30 seconds
     pub fn validate(&self) -> Result<(), AtlsVerificationError> {
         // Validate TCB status values
         for status in &self.allowed_tcb_status {
@@ -120,10 +147,19 @@ impl DstackTdxPolicy {
         if self.grace_period.is_some() {
             if !self.allowed_tcb_status.iter().any(|s| s == "OutOfDate") {
                 return Err(AtlsVerificationError::Configuration(
-                    "grace_period requires allowed_tcb_status to include OutOfDate"
-                        .into(),
+                    "grace_period requires allowed_tcb_status to include OutOfDate".into(),
                 ));
             }
+        }
+
+        // Validate re-attestation interval (0 = disabled)
+        if self.reattestation_interval_secs != 0
+            && self.reattestation_interval_secs < MIN_REATTESTATION_INTERVAL_SECS
+        {
+            return Err(AtlsVerificationError::Configuration(format!(
+                "reattestation_interval_secs must be 0 (disabled) or >= {} seconds",
+                MIN_REATTESTATION_INTERVAL_SECS
+            )));
         }
 
         // Validate os_image_hash is hex
@@ -192,6 +228,7 @@ impl IntoVerifier for DstackTdxPolicy {
         if let Some(grace) = self.grace_period {
             builder = builder.grace_period(grace);
         }
+        builder = builder.reattestation_interval_secs(self.reattestation_interval_secs);
 
         if let Some(pccs) = self.pccs_url {
             builder = builder.pccs_url(pccs);
@@ -218,7 +255,9 @@ mod tests {
     #[test]
     fn test_dstack_tdx_policy_dev() {
         let policy = DstackTdxPolicy::dev();
-        assert!(policy.allowed_tcb_status.contains(&"SWHardeningNeeded".to_string()));
+        assert!(policy
+            .allowed_tcb_status
+            .contains(&"SWHardeningNeeded".to_string()));
         assert!(policy.disable_runtime_verification);
     }
 
@@ -322,6 +361,67 @@ mod tests {
         };
         let result = policy.validate();
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_reattestation_interval_default() {
+        let policy = DstackTdxPolicy::default();
+        assert_eq!(
+            policy.reattestation_interval_secs,
+            DEFAULT_REATTESTATION_INTERVAL_SECS
+        );
+        // dev() keeps the secure default: freshness is not a runtime relaxation.
+        assert_eq!(
+            DstackTdxPolicy::dev().reattestation_interval_secs,
+            DEFAULT_REATTESTATION_INTERVAL_SECS
+        );
+    }
+
+    #[test]
+    fn test_reattestation_interval_defaults_when_absent_from_json() {
+        let parsed: DstackTdxPolicy =
+            serde_json::from_str(r#"{"disable_runtime_verification": true}"#).unwrap();
+        assert_eq!(
+            parsed.reattestation_interval_secs,
+            DEFAULT_REATTESTATION_INTERVAL_SECS
+        );
+    }
+
+    #[test]
+    fn test_reattestation_interval_roundtrip() {
+        for interval in [0u64, 600] {
+            let policy = DstackTdxPolicy {
+                reattestation_interval_secs: interval,
+                ..Default::default()
+            };
+            let json = serde_json::to_string(&policy).unwrap();
+            assert!(json.contains("reattestation_interval_secs"));
+            let parsed: DstackTdxPolicy = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed.reattestation_interval_secs, interval);
+        }
+    }
+
+    #[test]
+    fn test_reattestation_interval_zero_disables_and_validates() {
+        let policy = DstackTdxPolicy {
+            reattestation_interval_secs: 0,
+            disable_runtime_verification: true,
+            ..Default::default()
+        };
+        assert!(policy.validate().is_ok());
+    }
+
+    #[test]
+    fn test_reattestation_interval_below_minimum_rejected() {
+        let policy = DstackTdxPolicy {
+            reattestation_interval_secs: MIN_REATTESTATION_INTERVAL_SECS - 1,
+            disable_runtime_verification: true,
+            ..Default::default()
+        };
+        let result = policy.validate();
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("reattestation_interval_secs"));
     }
 
     #[test]

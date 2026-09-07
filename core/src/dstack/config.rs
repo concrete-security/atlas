@@ -1,5 +1,6 @@
 //! Configuration types for DStack TDX verification.
 
+use crate::dstack::policy::DEFAULT_REATTESTATION_INTERVAL_SECS;
 use crate::tdx::ExpectedBootchain;
 
 /// Configuration for DstackTDXVerifier.
@@ -23,6 +24,13 @@ pub struct DstackTDXVerifierConfig {
     ///
     /// If set, OutOfDate platforms are only allowed within this window.
     pub grace_period: Option<u64>,
+
+    /// Maximum age (seconds) of attestation evidence before re-attestation.
+    ///
+    /// Re-attestation-aware clients re-run verification over the live
+    /// session when the evidence is older than this at a message boundary.
+    /// 0 disables re-attestation. Default: 300 (5 minutes).
+    pub reattestation_interval_secs: u64,
 
     /// Disable runtime verification (NOT RECOMMENDED).
     ///
@@ -59,6 +67,7 @@ impl Default for DstackTDXVerifierConfig {
             app_compose: None,
             allowed_tcb_status: vec!["UpToDate".to_string()],
             grace_period: None,
+            reattestation_interval_secs: DEFAULT_REATTESTATION_INTERVAL_SECS,
             disable_runtime_verification: false,
             expected_bootchain: None,
             os_image_hash: None,
@@ -139,6 +148,12 @@ impl DstackTDXVerifierBuilder {
     /// Set the grace period (seconds) for OutOfDate platforms.
     pub fn grace_period(mut self, seconds: u64) -> Self {
         self.config.grace_period = Some(seconds);
+        self
+    }
+
+    /// Set the re-attestation interval in seconds (0 disables re-attestation).
+    pub fn reattestation_interval_secs(mut self, seconds: u64) -> Self {
+        self.config.reattestation_interval_secs = seconds;
         self
     }
 

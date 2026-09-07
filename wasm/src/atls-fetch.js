@@ -143,8 +143,11 @@ function buildProxyUrl(base, target) {
  * Create a fetch-compatible function for attested TLS connections.
  *
  * Connections are automatically pooled and reused for subsequent requests
- * to the same target. The `onAttestation` callback is called only once
- * when a new connection is established (not on reused connections).
+ * to the same target. Reused connections are transparently re-attested when
+ * their attestation evidence is older than the policy's
+ * `reattestation_interval_secs` (default 300 seconds; 0 disables). The
+ * `onAttestation` callback fires when a new connection is established and on
+ * every re-attestation.
  *
  * @param {Object} options
  * @param {string} options.proxyUrl - WebSocket proxy URL (e.g., "ws://127.0.0.1:9000")
@@ -152,7 +155,7 @@ function buildProxyUrl(base, target) {
  * @param {Object} options.policy - Verification policy
  * @param {string} [options.serverName] - TLS server name (defaults to hostname from targetHost)
  * @param {Object} [options.defaultHeaders] - Default headers to include in all requests
- * @param {Function} [options.onAttestation] - Callback when attestation is received (only on new connections)
+ * @param {Function} [options.onAttestation] - Callback invoked with the attestation result (on new connections and on every re-attestation)
  * @returns {Function} A fetch-compatible async function
  */
 export function createAtlsFetch(options) {
@@ -184,9 +187,30 @@ export function createAtlsFetch(options) {
     let http = connectionCache.get(cacheKey);
     let attestation;
 
+    // Transparently re-attest a reused connection whose attestation evidence
+    // is older than the policy's reattestation_interval_secs: a fresh nonce
+    // bound to the same session EKM, verified with the full pipeline.
+    if (http && http.isReady() && http.isReattestationDue()) {
+      try {
+        attestation = await http.reattest();
+        if (onAttestation && typeof onAttestation === "function") {
+          await onAttestation(attestation);
+        }
+      } catch (e) {
+        // Fail closed: drop the connection; the fresh connect below performs
+        // a full attestation.
+        console.warn("[atls-fetch] re-attestation failed, reconnecting:", e);
+        connectionCache.delete(cacheKey);
+        try { http.close(); } catch (_) {}
+        http = null;
+      }
+    }
+
     if (http && http.isReady()) {
-      // Reuse existing connection - no re-attestation needed
-      attestation = http.attestation();
+      // Reuse existing connection (evidence fresh or just re-attested)
+      if (attestation === undefined) {
+        attestation = http.attestation();
+      }
     } else {
       // Need to create a new connection
       // First, clean up any stale connection

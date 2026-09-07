@@ -84,6 +84,7 @@ Build a DStack TDX attestation policy dict
 | `app_compose_allowed_envs` | `list[str] \| None` | Override `allowed_envs` in app_compose |
 | `pccs_url` | `str \| None` | Intel PCCS URL for collateral |
 | `cache_collateral` | `bool` | Cache Intel collateral between verifications |
+| `reattestation_interval_secs` | `int \| None` | Max age (seconds) of attestation evidence before transparent re-attestation. Omitted = core default (300). `0` disables; non-zero values below 30 are rejected |
 
 ### `atlas.policy.dev_policy()`
 
@@ -109,6 +110,13 @@ Python bindings use the Rust core via PyO3 for the full aTLS pipeline:
 3. **Attestation** - Rust fetches and verifies the TDX quote against the policy
 4. **Stream Return** - The attested TLS stream is returned to Python
 5. **HTTP** - httpx sends requests over the attested stream
+6. **Re-attestation** - When a reused connection's evidence is older than
+   `reattestation_interval_secs` (default 300; `0` disables), Rust
+   transparently re-attests it in-band before the next request is sent. A
+   failed re-attestation closes the connection and raises
+   `atlas.ReattestationError` (fail closed); retrying gets a fresh, fully
+   attested connection. `response.extensions["attestation"]` always reflects
+   the latest verification.
 
 All TLS and verification happens in Rust. Python handles HTTP protocol and provides the httpx/API wrapper.
 
