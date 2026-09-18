@@ -1,0 +1,5 @@
+{$DOMAIN} {
+    reverse_proxy /tunnel* proxy:9000
+
+    respond /health "OK" 200
+}
