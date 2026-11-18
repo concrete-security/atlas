@@ -3,13 +3,14 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{OnceLock, RwLock};
 
-use dcap_qvl::collateral::get_collateral;
+use dcap_qvl::collateral::CollateralClient;
+use dcap_qvl::intel::{quote_ca, quote_fmspc};
 use dcap_qvl::quote::Quote;
 use dcap_qvl::verify::{verify, VerifiedReport};
 use dcap_qvl::QuoteCollateralV3;
 use dstack_sdk_types::dstack::{EventLog, GetQuoteResponse};
 use log::{debug, warn};
-use sha2::{Digest, Sha256, Sha512};
+use sha2::{Digest, Sha256, Sha384, Sha512};
 
 use crate::dstack::compose_hash::get_compose_hash;
 use crate::dstack::config::DstackTDXVerifierConfig;
@@ -31,6 +32,9 @@ struct CachedCollateral {
 
 /// Default collateral cache TTL: 8 hours (in seconds).
 const COLLATERAL_CACHE_TTL_SECS: u64 = 8 * 3600;
+const MAX_QUOTE_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
+const MAX_QUOTE_HEADER_BYTES: usize = 16 * 1024;
+const DSTACK_RUNTIME_EVENT_TYPE: u32 = 0x0800_0001;
 
 /// Quote certification-data type carrying the full PCK certificate chain
 /// (mirrors dcap-qvl's private `constants::PCK_CERT_CHAIN`).
@@ -107,6 +111,10 @@ fn store_cached_collateral(key: CollateralCacheKey, collateral: QuoteCollateralV
 #[derive(Debug, serde::Deserialize)]
 struct QuoteEndpointResponse {
     quote: GetQuoteResponse,
+}
+
+fn is_runtime_event(event: &EventLog, name: &str) -> bool {
+    event.imr == 3 && event.event_type == DSTACK_RUNTIME_EVENT_TYPE && event.event == name
 }
 
 /// How to match the session certificate against "New TLS Certificate" events.
@@ -195,11 +203,10 @@ impl DstackTDXVerifier {
         let parsed_quote = Quote::parse(quote)
             .map_err(|e| AtlsVerificationError::Quote(format!("Failed to parse quote: {}", e)))?;
         let fmspc =
-            hex::encode_upper(parsed_quote.fmspc().map_err(|e| {
+            hex::encode_upper(quote_fmspc(&parsed_quote).map_err(|e| {
                 AtlsVerificationError::Quote(format!("Failed to get FMSPC: {}", e))
             })?);
-        let ca = parsed_quote
-            .ca()
+        let ca = quote_ca(&parsed_quote)
             .map_err(|e| AtlsVerificationError::Quote(format!("Failed to get CA: {}", e)))?;
 
         let cache_key = (pccs_url.to_string(), fmspc.clone(), ca);
@@ -233,7 +240,13 @@ impl DstackTDXVerifier {
             }
             None => {
                 debug!("Fetching collateral from {}", pccs_url);
-                let c = get_collateral(pccs_url, quote).await.map_err(|e| {
+                let client = CollateralClient::with_default_http(pccs_url).map_err(|e| {
+                    AtlsVerificationError::Quote(format!(
+                        "Failed to initialize collateral client: {}",
+                        e
+                    ))
+                })?;
+                let c = client.fetch(quote).await.map_err(|e| {
                     AtlsVerificationError::Quote(format!("Failed to get collateral: {}", e))
                 })?;
 
@@ -371,7 +384,9 @@ impl DstackTDXVerifier {
         match mode {
             CertEventMatch::Latest => {
                 // Find last "New TLS Certificate" event
-                let cert_event = events.iter().rfind(|e| e.event == "New TLS Certificate");
+                let cert_event = events
+                    .iter()
+                    .rfind(|event| is_runtime_event(event, "New TLS Certificate"));
 
                 match cert_event {
                     Some(event) => {
@@ -389,7 +404,10 @@ impl DstackTDXVerifier {
             }
             CertEventMatch::Any => {
                 let mut found_any_event = false;
-                for event in events.iter().filter(|e| e.event == "New TLS Certificate") {
+                for event in events
+                    .iter()
+                    .filter(|event| is_runtime_event(event, "New TLS Certificate"))
+                {
                     found_any_event = true;
                     // Malformed payloads stay strict errors in both modes.
                     let eventlog_cert_hash = decode_cert_event_payload(event)?;
@@ -431,7 +449,7 @@ impl DstackTDXVerifier {
         // Verify against event log (trusted after RTMR replay verification)
         let event = events
             .iter()
-            .find(|e| e.event == "compose-hash")
+            .find(|event| is_runtime_event(event, "compose-hash"))
             .ok_or_else(|| AtlsVerificationError::AppComposeHashMismatch {
                 expected: expected.clone(),
                 actual: "<not found in event log>".to_string(),
@@ -469,7 +487,7 @@ impl DstackTDXVerifier {
         // Verify against event log (trusted after RTMR replay verification)
         let event = events
             .iter()
-            .find(|e| e.event == "os-image-hash")
+            .find(|event| is_runtime_event(event, "os-image-hash"))
             .ok_or_else(|| AtlsVerificationError::OsImageHashMismatch {
                 expected: expected.clone(),
                 actual: Some("<not found in event log>".to_string()),
@@ -633,6 +651,11 @@ impl DstackTDXVerifier {
         session_ekm: &[u8],
         cert_match: CertEventMatch,
     ) -> Result<Report, AtlsVerificationError> {
+        if body.len() > MAX_QUOTE_RESPONSE_BYTES {
+            return Err(AtlsVerificationError::Quote(
+                "Quote response exceeds size limit".into(),
+            ));
+        }
         let response: QuoteEndpointResponse = serde_json::from_slice(body).map_err(|e| {
             AtlsVerificationError::Quote(format!("Failed to parse /tdx_quote response: {}", e))
         })?;
@@ -661,6 +684,14 @@ impl DstackTDXVerifier {
             .decode_event_log()
             .map_err(|e| AtlsVerificationError::Other(e.into()))?;
         debug!("Event log parsed, {} events found", events.len());
+
+        // 2b. Authenticate the RTMR3 event payloads against their logged digests.
+        // replay_rtmrs() (step 6) trusts each event's `digest` verbatim and never
+        // rebinds it to (event_type, event, event_payload); without this, an attacker
+        // can keep the genuine digests (so RTMR replay still matches the quote) while
+        // rewriting event_payload to forge the cert / compose-hash / os-image-hash that
+        // the checks below read. This binds payload -> digest; replay binds digest -> quote.
+        verify_event_log_integrity(&events)?;
 
         // 3. Verify certificate in event log
         debug!("Verifying certificate in event log");
@@ -772,6 +803,8 @@ where
     // Read HTTP response
     let mut response_buf = Vec::new();
     let mut chunk = [0u8; 4096];
+    let mut body_start = None;
+    let mut response_end = None;
 
     // Read until we have the complete response
     loop {
@@ -782,24 +815,45 @@ where
         if n == 0 {
             break;
         }
+        if n > MAX_QUOTE_RESPONSE_BYTES - response_buf.len() {
+            return Err(AtlsVerificationError::Quote(
+                "Quote response exceeds size limit".into(),
+            ));
+        }
         response_buf.extend_from_slice(&chunk[..n]);
 
-        // Check if we have the complete response (look for end of body)
-        if let Some(body_start) = find_http_body_start(&response_buf) {
-            // Try to parse content-length header
-            if let Some(content_length) = parse_content_length(&response_buf[..body_start]) {
-                if response_buf.len() >= body_start + content_length {
-                    break;
-                }
+        if body_start.is_none() {
+            body_start = find_http_body_start(&response_buf);
+            if body_start.unwrap_or(response_buf.len()) > MAX_QUOTE_HEADER_BYTES {
+                return Err(AtlsVerificationError::Quote(
+                    "Quote response headers exceed size limit".into(),
+                ));
             }
+            if let Some(start) = body_start {
+                let length = parse_content_length(&response_buf[..start])?;
+                if length > MAX_QUOTE_RESPONSE_BYTES - start {
+                    return Err(AtlsVerificationError::Quote(
+                        "Quote response exceeds size limit".into(),
+                    ));
+                }
+                response_end = Some(start + length);
+            }
+        }
+        if response_end.is_some_and(|end| response_buf.len() >= end) {
+            break;
         }
     }
 
     debug!("Received quote response ({} bytes)", response_buf.len());
 
     // Parse HTTP response
-    let body_start = find_http_body_start(&response_buf)
-        .ok_or_else(|| AtlsVerificationError::Io("Invalid HTTP response".into()))?;
+    let body_start =
+        body_start.ok_or_else(|| AtlsVerificationError::Io("Invalid HTTP response".into()))?;
+    if response_end.is_some_and(|end| response_buf.len() != end) {
+        return Err(AtlsVerificationError::Quote(
+            "Quote response length does not match headers".into(),
+        ));
+    }
     let response_body = &response_buf[body_start..];
 
     let response: QuoteEndpointResponse = serde_json::from_slice(response_body).map_err(|e| {
@@ -819,16 +873,84 @@ fn find_http_body_start(data: &[u8]) -> Option<usize> {
     None
 }
 
-/// Parse Content-Length header from HTTP response.
-fn parse_content_length(headers: &[u8]) -> Option<usize> {
-    let headers_str = std::str::from_utf8(headers).ok()?;
-    for line in headers_str.lines() {
-        if line.to_lowercase().starts_with("content-length:") {
-            let value = line.split(':').nth(1)?.trim();
-            return value.parse().ok();
+/// The quote endpoint returns one length-delimited response on the live TLS session.
+fn parse_content_length(headers: &[u8]) -> Result<usize, AtlsVerificationError> {
+    let headers = std::str::from_utf8(headers)
+        .map_err(|_| AtlsVerificationError::Quote("Invalid quote response headers".into()))?;
+    let mut length = None;
+    for line in headers
+        .split("\r\n")
+        .skip(1)
+        .take_while(|line| !line.is_empty())
+    {
+        let (name, value) = line
+            .split_once(':')
+            .ok_or_else(|| AtlsVerificationError::Quote("Invalid quote response header".into()))?;
+        if name.eq_ignore_ascii_case("transfer-encoding") {
+            return Err(AtlsVerificationError::Quote(
+                "Unexpected Transfer-Encoding in quote response".into(),
+            ));
+        }
+        if name.eq_ignore_ascii_case("content-length") {
+            if length.is_some() {
+                return Err(AtlsVerificationError::Quote(
+                    "Duplicate Content-Length in quote response".into(),
+                ));
+            }
+            length = Some(value.trim().parse().map_err(|_| {
+                AtlsVerificationError::Quote("Invalid Content-Length in quote response".into())
+            })?);
         }
     }
-    None
+    length.ok_or_else(|| {
+        AtlsVerificationError::Quote("Missing Content-Length in quote response".into())
+    })
+}
+
+/// Authenticate RTMR3 event payloads against their logged digests.
+///
+/// dstack extends RTMR3 with `digest = sha384(event_type.to_le_bytes() || b":" ||
+/// event || b":" || event_payload)`, but `replay_rtmrs()` replays the `digest` field
+/// verbatim and never rebinds it to the event contents. atlas reads `event_payload`
+/// (cert hash, compose-hash, os-image-hash) to make trust decisions, so a payload that
+/// is not tied back to its digest is attacker-controlled. Recomputing the digest closes
+/// the chain: payload -> digest here, digest -> quote via `verify_rtmr_replay`.
+///
+/// IMR 0-2 use the TCG multi-digest format and are checked against the DCAP report
+/// by `verify_bootchain`. Higher indexes are outside the dstack RTMR replay.
+fn verify_event_log_integrity(events: &[EventLog]) -> Result<(), AtlsVerificationError> {
+    for event in events {
+        match event.imr {
+            0..=2 => continue,
+            3 => {}
+            other => {
+                return Err(AtlsVerificationError::EventLogParse(format!(
+                    "unsupported IMR index {} in event log",
+                    other
+                )));
+            }
+        }
+        let payload = hex::decode(&event.event_payload).map_err(|e| {
+            AtlsVerificationError::EventLogParse(format!(
+                "failed to hex-decode event_payload for '{}': {}",
+                event.event, e
+            ))
+        })?;
+
+        let mut hasher = Sha384::new();
+        hasher.update(event.event_type.to_le_bytes());
+        hasher.update(b":");
+        hasher.update(event.event.as_bytes());
+        hasher.update(b":");
+        hasher.update(&payload);
+
+        if hex::encode(hasher.finalize()) != event.digest {
+            return Err(AtlsVerificationError::EventLogDigestMismatch {
+                event: event.event.clone(),
+            });
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1000,5 +1122,79 @@ mod tests {
             refreshed.map(|c| c.pck_crl_issuer_chain),
             Some("new".to_string())
         );
+    }
+
+    fn ev(imr: u32, event_type: u32, event: &str, event_payload: &str, digest: &str) -> EventLog {
+        EventLog {
+            imr,
+            event_type,
+            digest: digest.to_string(),
+            event: event.to_string(),
+            event_payload: event_payload.to_string(),
+        }
+    }
+
+    /// Real RTMR3 events from a dstack event log (sdk/simulator/eventlog.json), including
+    /// an empty-payload event. Proves our recomputation reproduces dstack's actual
+    /// `event_digest` output — a non-circular check of the derivation, not just self-consistency.
+    #[test]
+    fn test_event_log_integrity_genuine_dstack_digests_success() {
+        let events = vec![
+            ev(
+                3,
+                0x0800_0001,
+                "app-id",
+                "ea549f02e1a25fabd1cb788380e033ec5461b2ff",
+                "b01c7a2e6a406ae9cd5aa81451e4614e112b8f404df12e6ef506962c1a5279a94dc58da0923c4b7db89e26da9e538302",
+            ),
+            ev(
+                3,
+                0x0800_0001,
+                "compose-hash",
+                "ea549f02e1a25fabd1cb788380e033ec5461b2ffe4328d753642cf035452e48b",
+                "9c1fecc259af1e8494484a391bdef460cb74d677c76dd114b1e9e7fac343da4e773b2b0eb8df7a6fc0dd8ba5edbb30e1",
+            ),
+            ev(
+                3,
+                0x0800_0001,
+                "system-ready",
+                "",
+                "1a76b2a80a0be71eae59f80945d876351a7a3fb8e9fd1ff1cede5734aa84ea11fd72b4edfbb6f04e5a85edd114c751bd",
+            ),
+        ];
+        assert!(verify_event_log_integrity(&events).is_ok());
+    }
+
+    /// Finding A: keep the genuine digest (so RTMR replay still matches the quote) but
+    /// rewrite the payload. Must be rejected — otherwise cert/compose/os-image are forgeable
+    /// by anyone serving the event log.
+    #[test]
+    fn test_event_log_integrity_forged_payload_failure() {
+        let events = vec![ev(
+            3,
+            0x0800_0001,
+            "compose-hash",
+            // attacker-substituted payload, genuine compose-hash digest below
+            "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "9c1fecc259af1e8494484a391bdef460cb74d677c76dd114b1e9e7fac343da4e773b2b0eb8df7a6fc0dd8ba5edbb30e1",
+        )];
+        assert!(matches!(
+            verify_event_log_integrity(&events),
+            Err(AtlsVerificationError::EventLogDigestMismatch { .. })
+        ));
+    }
+
+    /// IMR 0-2 use the TCG multi-digest format, not `event_digest`; dstack `validate()`
+    /// skips them and so must we — their payloads are never trusted by atlas.
+    #[test]
+    fn test_event_log_integrity_ignores_non_rtmr3_success() {
+        let events = vec![ev(
+            0,
+            0x8000_000b,
+            "",
+            "095464785461626c6500",
+            "0e35f1b315ba6c912cf791e5c79dd9d3a2b8704516aa27d4e5aa78fb09ede04aef2bbd02ac7a8734c48562b9c26ba35d",
+        )];
+        assert!(verify_event_log_integrity(&events).is_ok());
     }
 }

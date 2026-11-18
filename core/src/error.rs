@@ -37,6 +37,11 @@ pub enum AtlsVerificationError {
     #[error("failed to parse event log: {0}")]
     EventLogParse(String),
 
+    /// An RTMR3 event's logged digest does not match the digest recomputed from
+    /// its contents, so its `event_payload` is not authenticated by the quote.
+    #[error("event log digest mismatch for event '{event}'")]
+    EventLogDigestMismatch { event: String },
+
     /// TEE type mismatch.
     #[error("TEE type mismatch: {0}")]
     TeeTypeMismatch(String),

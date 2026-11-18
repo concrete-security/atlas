@@ -1,6 +1,6 @@
 [package]
 name = "atlas-rs"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 description = "attested TLS (aTLS) core library for verifying TEE attestations over TLS connections"
 license = "MIT"
@@ -31,7 +31,7 @@ webpki-roots = "0.26"
 
 # Non-WASM dependencies
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-dcap-qvl = "0.3"
+dcap-qvl = "0.4.1"
 rand = { version = "0.8", features = ["std"] }
 tokio = { version = "1", features = ["io-util"] }
 rustls = { version = "0.23", default-features = false, features = ["logging", "std", "tls12", "aws_lc_rs"] }
@@ -40,7 +40,7 @@ env_logger = "0.11"
 
 # WASM dependencies
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-dcap-qvl = { version = "0.3", features = ["js"] }
+dcap-qvl = { version = "0.4.1", features = ["js"] }
 rand = { version = "0.8", features = ["std"] }
 getrandom = { version = "0.2", features = ["js"] }
 futures = { version = "0.3", features = ["std"] }
