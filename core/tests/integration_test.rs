@@ -124,7 +124,7 @@ mod integration {
     use atlas_rs::tdx::grace_period::enforce_grace_period;
     use atlas_rs::AtlsVerifier;
     use atlas_rs::{DstackTdxPolicy, Policy};
-    use dcap_qvl::collateral::get_collateral;
+    use dcap_qvl::collateral::CollateralClient;
     use dcap_qvl::quote::Quote;
     use dcap_qvl::verify::verify;
     use dstack_sdk_types::dstack::GetQuoteResponse;
@@ -281,9 +281,12 @@ mod integration {
             .expect("Failed to decode quote");
         let quote = Quote::parse(&quote_bytes).expect("Failed to parse quote");
 
-        let collateral = get_collateral(atlas_rs::dstack::policy::DEFAULT_PCCS_URL, &quote_bytes)
-            .await
-            .expect("Failed to fetch collateral");
+        let collateral =
+            CollateralClient::with_default_http(atlas_rs::dstack::policy::DEFAULT_PCCS_URL)
+                .expect("Failed to initialize collateral client")
+                .fetch(&quote_bytes)
+                .await
+                .expect("Failed to fetch collateral");
 
         let now_secs = SystemTime::now()
             .duration_since(UNIX_EPOCH)
