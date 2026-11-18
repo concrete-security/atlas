@@ -6,7 +6,7 @@
 //! the session EKM, and the time of the last successful verification.
 //!
 //! Re-attestation repeats the full verification pipeline with a fresh nonce
-//! bound to the same session EKM (`report_data = SHA512(nonce || ekm)`), so
+//! bound to the same session EKM using the configured certificate binding, so
 //! each cycle carries the same security weight as the initial attestation.
 //! The session EKM never leaves the TLS endpoints, so reusing it across
 //! rounds is sound — it is exactly what binds the fresh evidence to *this*
@@ -186,9 +186,9 @@ impl Reattester {
     /// Finish a re-attestation exchange started with [`begin`](Self::begin).
     ///
     /// `response_body` is the raw body of the `/tdx_quote` HTTP response.
-    /// Runs the full verification pipeline; the response must prove
-    /// `report_data == SHA512(nonce || session_ekm)` for the nonce issued by
-    /// `begin`. Same success/failure semantics as [`reattest`](Self::reattest).
+    /// Runs the full verification pipeline for the nonce issued by `begin`
+    /// and the established session. Same success/failure semantics as
+    /// [`reattest`](Self::reattest).
     ///
     /// Consumes the request: a completed exchange cannot be replayed to
     /// refresh the evidence age again, and the age is anchored at the

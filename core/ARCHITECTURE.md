@@ -142,7 +142,7 @@ When `atls_connect()` is called:
 4. **Attestation** - Call `verifier.verify(stream, cert, hostname)`:
    - Fetch attestation quote from server (e.g., HTTP POST to `/tdx_quote`)
    - Verify quote cryptographically (e.g., Intel DCAP verification)
-   - Verify certificate binding (cert hash in event log)
+   - Verify the configured certificate binding (RTMR3 certificate event or TDX report data V2)
    - Verify measurements (bootchain, app config, OS image)
 5. **Return** - Return `(TlsStream, Report)` for continued communication
 
@@ -158,13 +158,11 @@ hyper in the wasm binding), `begin()`/`finish()` split the exchange: the
 caller sends the `/tdx_quote` request itself and hands the response body back
 for appraisal.
 
-The only difference from initial verification is the certificate/event-log
-check (`CertEventMatch` in `dstack/verifier.rs`): initial handshakes require
-the *latest* `New TLS Certificate` event to match (`Latest`), while
-re-attestation accepts *any* matching event (`Any`) because a mid-session
-certificate rotation on the attester appends a new event to the append-only
-log while the session certificate stays valid. The log is
-integrity-protected by RTMR replay in both modes. Failures wrap in
+With the default event-log binding, the initial handshake requires the
+latest `New TLS Certificate` event and re-attestation can match an earlier
+event after certificate rotation. With `report-data-v2`, the report data
+binds the established connection's leaf on every appraisal. Both bindings
+require event integrity and RTMR replay. Failures wrap in
 `AtlsVerificationError::Reattestation` and are fail-closed: the evidence age
 is not refreshed and the connection must not be used further.
 

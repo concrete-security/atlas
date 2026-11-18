@@ -30,6 +30,35 @@ fn default_allowed_tcb_status() -> Vec<String> {
     vec!["UpToDate".to_string()]
 }
 
+/// Where the attester binds the TLS session's leaf certificate.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CertificateBinding {
+    /// Require the matching dstack RTMR3 certificate event.
+    #[default]
+    EventLog,
+    /// Require the leaf digest in the fresh session-bound TDX report data.
+    ReportDataV2,
+}
+
+impl CertificateBinding {
+    fn is_event_log(&self) -> bool {
+        *self == Self::EventLog
+    }
+
+    pub(crate) fn validate_runtime_verification(
+        self,
+        disable_runtime_verification: bool,
+    ) -> Result<(), AtlsVerificationError> {
+        if self == Self::ReportDataV2 && disable_runtime_verification {
+            return Err(AtlsVerificationError::Configuration(
+                "report-data-v2 requires full runtime verification".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// Policy configuration for dstack TDX verification.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DstackTdxPolicy {
@@ -44,6 +73,13 @@ pub struct DstackTdxPolicy {
     /// Expected OS image hash (SHA256).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub os_image_hash: Option<String>,
+
+    /// Certificate binding selected by the caller. Defaults to the RTMR3 event.
+    ///
+    /// Use `report-data-v2` for an attester configured to bind the certificate
+    /// to the TDX report data. This mode requires full runtime verification.
+    #[serde(default, skip_serializing_if = "CertificateBinding::is_event_log")]
+    pub certificate_binding: CertificateBinding,
 
     /// Allowed TCB status values.
     #[serde(default = "default_allowed_tcb_status")]
@@ -90,6 +126,7 @@ impl Default for DstackTdxPolicy {
             expected_bootchain: None,
             app_compose: None,
             os_image_hash: None,
+            certificate_binding: CertificateBinding::default(),
             allowed_tcb_status: default_allowed_tcb_status(),
             grace_period: None,
             reattestation_interval_secs: DEFAULT_REATTESTATION_INTERVAL_SECS,
@@ -130,9 +167,13 @@ impl DstackTdxPolicy {
     /// - `allowed_tcb_status` values are valid TCB status strings
     /// - `os_image_hash` is a valid hex string (if provided)
     /// - `expected_bootchain` fields are valid hex strings (if provided)
+    /// - `report-data-v2` requires full runtime verification
     /// - `grace_period` requires `allowed_tcb_status` to include `OutOfDate`
     /// - `reattestation_interval_secs` is 0 (disabled) or >= 30 seconds
     pub fn validate(&self) -> Result<(), AtlsVerificationError> {
+        self.certificate_binding
+            .validate_runtime_verification(self.disable_runtime_verification)?;
+
         // Validate TCB status values
         for status in &self.allowed_tcb_status {
             if !TCB_STATUS_LIST.contains(&status.as_str()) {
@@ -206,7 +247,8 @@ impl IntoVerifier for DstackTdxPolicy {
         // Validate configuration before building
         self.validate()?;
 
-        let mut builder = DstackTDXVerifierBuilder::new();
+        let mut builder =
+            DstackTDXVerifierBuilder::new().certificate_binding(self.certificate_binding);
 
         // Only disable runtime verification if explicitly requested
         if self.disable_runtime_verification {
@@ -243,6 +285,46 @@ impl IntoVerifier for DstackTdxPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn certificate_binding_is_explicit_and_defaults_to_event_log() {
+        let legacy: DstackTdxPolicy = serde_json::from_str("{}").unwrap();
+        assert_eq!(legacy.certificate_binding, CertificateBinding::EventLog);
+        assert!(serde_json::to_value(legacy)
+            .unwrap()
+            .get("certificate_binding")
+            .is_none());
+        let v2: DstackTdxPolicy =
+            serde_json::from_str(r#"{"certificate_binding":"report-data-v2"}"#).unwrap();
+        assert_eq!(v2.certificate_binding, CertificateBinding::ReportDataV2);
+        assert_eq!(
+            serde_json::to_value(v2).unwrap()["certificate_binding"],
+            "report-data-v2"
+        );
+        assert!(
+            serde_json::from_str::<DstackTdxPolicy>(r#"{"certificate_binding":"automatic"}"#)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn report_data_v2_rejects_disabling_runtime_verification() {
+        let policy = DstackTdxPolicy {
+            certificate_binding: CertificateBinding::ReportDataV2,
+            ..DstackTdxPolicy::dev()
+        };
+        assert!(matches!(
+            policy.validate(),
+            Err(AtlsVerificationError::Configuration(_))
+        ));
+        assert!(matches!(
+            DstackTDXVerifierBuilder::new()
+                .certificate_binding(CertificateBinding::ReportDataV2)
+                .disable_runtime_verification()
+                .build(),
+            Err(AtlsVerificationError::Configuration(_))
+        ));
+    }
 
     #[test]
     fn test_dstack_tdx_policy_default() {

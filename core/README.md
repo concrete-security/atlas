@@ -10,7 +10,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-atlas-rs = "0.1"
+atlas-rs = "0.3"
 ```
 
 Or use `cargo add`:
@@ -265,11 +265,21 @@ aTLS binds attestations to specific TLS sessions using **Exported Keying Materia
 
 1. After TLS handshake, both client and server extract a 32-byte session-specific EKM using the label `"EXPORTER-Channel-Binding"`
 2. Client generates a random 32-byte nonce for freshness
-3. Both parties compute `report_data = SHA512(nonce || session_ekm)`
+3. Both parties compute `report_data` using the configured certificate binding mode
 4. Server generates a TDX quote with this computed `report_data`
 5. Client verifies the quote, ensuring the `report_data` matches its own computation
 
 Since the EKM is derived from the TLS session's master secret (unique per session), each attestation is cryptographically bound to its specific TLS connection. An attacker cannot relay an attestation from one session to another, even with access to the private key.
+
+**Certificate binding:** The default `event-log` mode uses
+`SHA512(nonce || session_ekm)` and requires a matching RTMR3 certificate event.
+Set `"certificate_binding": "report-data-v2"` in a policy for a compatible
+attester running dstack 0.6. The quote's verified report data must equal
+`SHA512(b"shade-tdx-report-data-v2\0" || nonce || session_ekm || SHA256(leaf_der))`,
+where `leaf_der` is the actual TLS session's leaf certificate. Each nonce, EKM,
+and SHA-256 digest contributes exactly 32 bytes. V2 requires full runtime
+verification and the dstack legacy event log format (version 1) for RTMR replay.
+The policy selects a single mode for the connection and all re-attestations.
 
 **Key Properties:**
 - **Always enabled** - No configuration needed
@@ -294,14 +304,13 @@ be interrupted mid-flight; it is re-checked at the next boundary.
 **How it works:** re-attestation repeats the full verification pipeline —
 `/tdx_quote` exchange, DCAP verification, RTMR replay, bootchain, app compose,
 and OS image checks — with a **fresh nonce** bound to the **same session EKM**
-(`report_data = SHA512(nonce || session_ekm)`). The fresh nonce guarantees
+and certificate. The fresh nonce guarantees
 evidence freshness; the EKM (a secret that never leaves the TLS endpoints)
 binds the fresh evidence to this specific live session. Each cycle therefore
-carries the same security weight as the initial attestation. The one
-difference: the session certificate may match *any* `New TLS Certificate`
-event in the log rather than only the latest, because a mid-session server
-certificate rotation appends a new event while the session certificate stays
-valid (the log is append-only and integrity-protected by RTMR replay).
+carries the same security weight as the initial attestation. In event-log
+mode, initial verification requires the most recent `New TLS Certificate`
+event and re-attestation can match an earlier event after a certificate
+rotation. In V2, every appraisal binds the established connection's leaf.
 
 **Failure is fail-closed:** a failed re-attestation returns
 `AtlsVerificationError::Reattestation`, the evidence age is not refreshed, and
@@ -320,7 +329,8 @@ transports that own the stream (e.g. an HTTP client), use
 
 ### Step 1: TLS Handshake
 
-TLS 1.3 handshake with a promiscuous verifier. The certificate is accepted temporarily and recorded for later verification.
+The TLS handshake validates the server's public certificate chain and
+hostname. The client retains the TLS leaf for attestation verification.
 
 ### Step 2: EKM Extraction & Quote Retrieval
 
@@ -330,14 +340,8 @@ After TLS handshake, both client and server extract session EKM:
 session_ekm = export_keying_material(32, "EXPORTER-Channel-Binding", None)
 ```
 
-Client generates a 32-byte nonce and computes expected report_data:
-
-```rust
-nonce = random_bytes(32)
-report_data = SHA512(nonce || session_ekm)
-```
-
-Client sends an HTTP POST over the established TLS channel:
+The client generates a 32-byte nonce and sends an HTTP POST over the
+established TLS channel:
 
 ```http
 POST /tdx_quote HTTP/1.1
@@ -349,7 +353,8 @@ Content-Type: application/json
 }
 ```
 
-Server extracts its own session EKM, computes the same `report_data = SHA512(nonce || server_ekm)`, and generates a quote with that report_data.
+The server extracts its own session EKM, computes report data in its
+configured certificate binding mode, and generates a quote with that value.
 
 Server responds:
 
@@ -367,19 +372,17 @@ Server responds:
 ### Step 3: Verification
 
 1. Validate the quote signature using Intel PCCS collateral (DCAP verification flow)
-2. Ensure `report_data` in the quote equals `SHA512(nonce || session_ekm)` (session binding + freshness)
-3. Recompute RTMR3 by replaying every event log entry in order and ensure the final digest matches the quote
-4. During that replay, locate the TLS key binding event (contains the certificate pubkey hash) to prove the attested workload owns the negotiated TLS key
+2. Verify the quote's report data against the fresh nonce, session EKM, and leaf if the policy selects V2
+3. Authenticate the event payloads and verify the event log replays to the quoted registers
+4. For event-log mode, require the matching certificate event (contains the SHA-256 digest of the leaf DER)
 5. Verify bootchain (MRTD, RTMR0-2), app compose hash, and OS image hash against policy
 
 ### Step 4: Re-attestation (periodic)
 
 While the connection stays open, the client repeats the Step 2 exchange and
 Step 3 verification over the live session with a fresh nonce whenever the
-evidence age exceeds `reattestation_interval_secs` at a message boundary. The
-session certificate check accepts any matching `New TLS Certificate` event
-(not only the latest) to tolerate mid-session certificate rotation on the
-attester.
+evidence age exceeds `reattestation_interval_secs` at a message boundary.
+Each appraisal verifies the same session certificate in the configured mode.
 
 ## TCB Status Values
 

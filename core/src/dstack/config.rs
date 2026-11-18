@@ -1,6 +1,6 @@
 //! Configuration types for DStack TDX verification.
 
-use crate::dstack::policy::DEFAULT_REATTESTATION_INTERVAL_SECS;
+use crate::dstack::policy::{CertificateBinding, DEFAULT_REATTESTATION_INTERVAL_SECS};
 use crate::tdx::ExpectedBootchain;
 
 /// Configuration for DstackTDXVerifier.
@@ -49,6 +49,9 @@ pub struct DstackTDXVerifierConfig {
     /// The SHA256 hash of the OS image that should be running in the TD.
     pub os_image_hash: Option<String>,
 
+    /// How to verify the TLS session's leaf certificate.
+    pub certificate_binding: CertificateBinding,
+
     /// PCCS URL for collateral fetching.
     ///
     /// If None, uses Intel's default PCS endpoint.
@@ -71,6 +74,7 @@ impl Default for DstackTDXVerifierConfig {
             disable_runtime_verification: false,
             expected_bootchain: None,
             os_image_hash: None,
+            certificate_binding: CertificateBinding::default(),
             pccs_url: None,
             cache_collateral: true,
         }
@@ -136,6 +140,12 @@ impl DstackTDXVerifierBuilder {
     /// Set the expected OS image hash.
     pub fn os_image_hash(mut self, hash: impl Into<String>) -> Self {
         self.config.os_image_hash = Some(hash.into());
+        self
+    }
+
+    /// Select the TLS certificate binding expected from the attester.
+    pub fn certificate_binding(mut self, binding: CertificateBinding) -> Self {
+        self.config.certificate_binding = binding;
         self
     }
 

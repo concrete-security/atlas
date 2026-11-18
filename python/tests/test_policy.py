@@ -73,6 +73,11 @@ class TestDstackTdxPolicy:
         )
         assert policy["reattestation_interval_secs"] == 600
 
+    def test_dstack_tdx_policy_with_certificate_binding(self):
+        """Keep the explicit report-data mode when passing the policy to Atlas."""
+        policy = dstack_tdx_policy(app_compose={}, certificate_binding="report-data-v2")
+        assert policy["certificate_binding"] == "report-data-v2"
+
     def test_dstack_tdx_policy_reattestation_interval_zero_disables(self):
         """0 is passed through explicitly to disable re-attestation."""
         policy = dstack_tdx_policy(

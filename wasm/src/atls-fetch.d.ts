@@ -15,6 +15,8 @@ export interface DstackTdxPolicy {
   };
   os_image_hash?: string;
   app_compose?: Record<string, unknown>;
+  /** Certificate binding mode, default: "event-log". V2 requires full runtime verification. */
+  certificate_binding?: "event-log" | "report-data-v2";
   allowed_tcb_status?: string[];
   /**
    * Max age (seconds) of attestation evidence before transparent
