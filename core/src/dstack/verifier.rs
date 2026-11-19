@@ -1028,9 +1028,7 @@ mod tests {
     }
 
     fn decode_vector_field<const N: usize>(value: &str) -> [u8; N] {
-        let mut bytes = [0; N];
-        hex::decode_to_slice(value, &mut bytes).unwrap();
-        bytes
+        hex::decode(value).unwrap().try_into().unwrap()
     }
 
     #[test]
