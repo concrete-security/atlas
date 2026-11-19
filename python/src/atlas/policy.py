@@ -7,7 +7,7 @@ attestation.
 """
 
 import json
-from typing import Optional
+from typing import Literal, Optional
 
 from atlas._atlas import merge_with_default_app_compose_py
 
@@ -40,6 +40,7 @@ def dstack_tdx_policy(
     pccs_url: Optional[str] = None,
     cache_collateral: bool = False,
     reattestation_interval_secs: Optional[int] = None,
+    certificate_binding: Optional[Literal["event-log", "report-data-v2"]] = None,
 ) -> dict:
     """Build a DstackTdx attestation policy dict.
 
@@ -64,6 +65,9 @@ def dstack_tdx_policy(
             app_compose.
         pccs_url: PCCS URL for Intel collateral fetching.
         cache_collateral: Cache Intel collateral between verifications.
+        certificate_binding: TLS certificate binding mode. The core defaults
+            to ``"event-log"``. ``"report-data-v2"`` requires full runtime
+            verification and a compatible attester.
         reattestation_interval_secs: Max age (seconds) of attestation
             evidence before the connection is transparently re-attested.
             When omitted, the Rust core default of 300 seconds applies.
@@ -97,6 +101,9 @@ def dstack_tdx_policy(
 
     if reattestation_interval_secs is not None:
         policy["reattestation_interval_secs"] = reattestation_interval_secs
+
+    if certificate_binding is not None:
+        policy["certificate_binding"] = certificate_binding
 
     if not disable_runtime_verification:
         # Build app_compose

@@ -14,6 +14,7 @@ use sha2::{Digest, Sha256, Sha384, Sha512};
 
 use crate::dstack::compose_hash::get_compose_hash;
 use crate::dstack::config::DstackTDXVerifierConfig;
+use crate::dstack::CertificateBinding;
 use crate::error::AtlsVerificationError;
 use crate::tdx::grace_period::enforce_grace_period;
 use crate::verifier::{AsyncByteStream, AsyncReadExt, AsyncWriteExt, AtlsVerifier, Report};
@@ -35,6 +36,7 @@ const COLLATERAL_CACHE_TTL_SECS: u64 = 8 * 3600;
 const MAX_QUOTE_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_QUOTE_HEADER_BYTES: usize = 16 * 1024;
 const DSTACK_RUNTIME_EVENT_TYPE: u32 = 0x0800_0001;
+const REPORT_DATA_V2_DOMAIN: &[u8] = b"shade-tdx-report-data-v2\0";
 
 /// Quote certification-data type carrying the full PCK certificate chain
 /// (mirrors dcap-qvl's private `constants::PCK_CERT_CHAIN`).
@@ -157,7 +159,7 @@ fn decode_cert_event_payload(event: &EventLog) -> Result<String, AtlsVerificatio
 /// This verifier implements the full verification flow:
 /// 1. Fetch quote from remote server
 /// 2. Verify DCAP quote using Intel PCS
-/// 3. Verify certificate binding to event log
+/// 3. Verify certificate binding to its configured event log or report data
 /// 4. Verify RTMR replay
 /// 5. Verify bootchain measurements (MRTD, RTMR0-2)
 /// 6. Verify app compose hash
@@ -169,6 +171,10 @@ pub struct DstackTDXVerifier {
 impl DstackTDXVerifier {
     /// Create a new DstackTDXVerifier with the given configuration.
     pub fn new(config: DstackTDXVerifierConfig) -> Result<Self, AtlsVerificationError> {
+        config
+            .certificate_binding
+            .validate_runtime_verification(config.disable_runtime_verification)?;
+
         // Validation: bootchain and os_image_hash must be provided together
         if !config.disable_runtime_verification {
             if config.expected_bootchain.is_none() || config.os_image_hash.is_none() {
@@ -325,8 +331,6 @@ impl DstackTDXVerifier {
 
         // Check MRTD (convert from bytes to hex string)
         let actual_mrtd = hex::encode(td_report.mr_td);
-        debug!("MRTD expected: {}", bootchain.mrtd);
-        debug!("MRTD actual:   {}", actual_mrtd);
         let mrtd_match = actual_mrtd == bootchain.mrtd;
         debug!("MRTD match: {}", mrtd_match);
 
@@ -347,8 +351,6 @@ impl DstackTDXVerifier {
         let expected_rtmrs = [&bootchain.rtmr0, &bootchain.rtmr1, &bootchain.rtmr2];
 
         for idx in 0..3usize {
-            debug!("RTMR{} expected: {}", idx, expected_rtmrs[idx]);
-            debug!("RTMR{} actual:   {}", idx, actual_rtmrs[idx]);
             let rtmr_match = &actual_rtmrs[idx] == expected_rtmrs[idx];
             debug!("RTMR{} match: {}", idx, rtmr_match);
 
@@ -567,39 +569,40 @@ impl DstackTDXVerifier {
         Ok(())
     }
 
-    /// Verify report data (nonce + session EKM) against the verified report.
+    /// Verify the report data from the DCAP-verified quote.
     ///
-    /// This prevents replay and relay attacks by ensuring the quote was generated specifically
-    /// for this verification request, within the current TLS session (identified by EKM).
+    /// Both modes bind the quote to the nonce and session EKM. V2 also binds
+    /// the TLS session's leaf certificate to the quote.
     fn verify_report_data(
         &self,
         nonce: &[u8; 32],
         session_ekm: &[u8; 32],
-        verified_report: &VerifiedReport,
+        peer_cert: &[u8],
+        actual: &[u8; 64],
     ) -> Result<(), AtlsVerificationError> {
-        debug!("Verifying report data against verified report");
+        let v2 = self.config.certificate_binding == CertificateBinding::ReportDataV2;
 
-        // Compute report_data = SHA512(nonce || session_ekm)
         let mut hasher = Sha512::new();
+        if v2 {
+            if peer_cert.is_empty() {
+                return Err(AtlsVerificationError::Configuration(
+                    "report-data-v2 requires the TLS peer's leaf certificate".into(),
+                ));
+            }
+            hasher.update(REPORT_DATA_V2_DOMAIN);
+        }
         hasher.update(nonce);
         hasher.update(session_ekm);
-        let report_data: [u8; 64] = hasher.finalize().into();
+        if v2 {
+            hasher.update(Sha256::digest(peer_cert));
+        }
+        let expected: [u8; 64] = hasher.finalize().into();
 
-        // Get the trusted TD report from DCAP verification
-        let td_report = verified_report.report.as_td10().ok_or_else(|| {
-            AtlsVerificationError::TeeTypeMismatch(
-                "expected TDX report but got SGX enclave report".into(),
-            )
-        })?;
-
-        let expected = hex::encode(report_data);
-        let actual = hex::encode(td_report.report_data);
-
-        debug!("Report data expected: {}", expected);
-        debug!("Report data actual:   {}", actual);
-
-        if expected != actual {
-            return Err(AtlsVerificationError::ReportDataMismatch { expected, actual });
+        if &expected != actual {
+            return Err(AtlsVerificationError::ReportDataMismatch {
+                expected: hex::encode(expected),
+                actual: hex::encode(actual),
+            });
         }
 
         debug!("Report data verification successful");
@@ -609,9 +612,9 @@ impl DstackTDXVerifier {
     /// Full verification: fetch a fresh quote in-band over `stream`, then
     /// appraise it.
     ///
-    /// `cert_match` selects how the session certificate is matched against
-    /// the event log (`Latest` for initial handshakes, `Any` for
-    /// re-attestation of an established session).
+    /// In event-log mode, `cert_match` selects how the session certificate is
+    /// matched (`Latest` for initial handshakes, `Any` for re-attestation of an
+    /// established session).
     pub(crate) async fn verify_with_mode<S>(
         &self,
         stream: &mut S,
@@ -641,8 +644,9 @@ impl DstackTDXVerifier {
     /// Appraise a `/tdx_quote` response body (raw JSON bytes) fetched by the
     /// caller over its own transport (e.g. an HTTP client owning the stream).
     ///
-    /// The caller supplies the `nonce` it sent with the quote request; the
-    /// appraisal enforces `report_data == SHA512(nonce || session_ekm)`.
+    /// The caller supplies the `nonce` it sent with the quote request.
+    /// Appraisal binds it to the session using the configured certificate
+    /// binding mode.
     pub(crate) async fn appraise_quote_body(
         &self,
         body: &[u8],
@@ -665,7 +669,7 @@ impl DstackTDXVerifier {
     }
 
     /// Appraise a quote response: event log decode, certificate binding,
-    /// DCAP verification, report data (nonce + EKM), RTMR replay, and —
+    /// DCAP verification, report data verification, RTMR replay, and —
     /// unless disabled — bootchain, app compose, and OS image checks.
     ///
     /// Every check runs in full on each call; re-attestation repeats the
@@ -693,10 +697,11 @@ impl DstackTDXVerifier {
         // the checks below read. This binds payload -> digest; replay binds digest -> quote.
         verify_event_log_integrity(&events)?;
 
-        // 3. Verify certificate in event log
-        debug!("Verifying certificate in event log");
-        let cert_in_eventlog = self.verify_cert_in_eventlog(peer_cert, &events, cert_match)?;
-        if !cert_in_eventlog {
+        // 3. Verify the legacy certificate event when required. V2 instead
+        // verifies the peer leaf in the DCAP-verified report data below.
+        if self.config.certificate_binding == CertificateBinding::EventLog
+            && !self.verify_cert_in_eventlog(peer_cert, &events, cert_match)?
+        {
             return Err(AtlsVerificationError::CertificateNotInEventLog);
         }
 
@@ -714,7 +719,12 @@ impl DstackTDXVerifier {
         let session_ekm: &[u8; 32] = session_ekm.try_into().map_err(|_| {
             AtlsVerificationError::Configuration("session_ekm must be exactly 32 bytes".into())
         })?;
-        self.verify_report_data(nonce, session_ekm, &verified_report)?;
+        let td_report = verified_report.report.as_td10().ok_or_else(|| {
+            AtlsVerificationError::TeeTypeMismatch(
+                "expected TDX report but got SGX enclave report".into(),
+            )
+        })?;
+        self.verify_report_data(nonce, session_ekm, peer_cert, &td_report.report_data)?;
 
         // 6. Verify RTMR replay against the verified report
         self.verify_rtmr_replay(quote_response, &verified_report)?;
@@ -956,6 +966,7 @@ fn verify_event_log_integrity(events: &[EventLog]) -> Result<(), AtlsVerificatio
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::verifier::IntoVerifier;
 
     fn collateral_with_marker(marker: &str) -> QuoteCollateralV3 {
         QuoteCollateralV3 {
@@ -988,6 +999,101 @@ mod tests {
             .disable_runtime_verification()
             .build()
             .unwrap()
+    }
+
+    fn test_report_data_v2_verifier() -> DstackTDXVerifier {
+        let measurement = "00".repeat(48);
+        let policy: crate::DstackTdxPolicy = serde_json::from_value(serde_json::json!({
+            "certificate_binding": "report-data-v2",
+            "expected_bootchain": {
+                "mrtd": measurement,
+                "rtmr0": measurement,
+                "rtmr1": measurement,
+                "rtmr2": measurement,
+            },
+            "app_compose": {},
+            "os_image_hash": "00".repeat(32),
+        }))
+        .unwrap();
+        policy.into_verifier().unwrap()
+    }
+
+    #[derive(serde::Deserialize)]
+    struct ReportDataVector {
+        nonce_hex: String,
+        ekm_hex: String,
+        leaf: String,
+        legacy_report_data_hex: String,
+        v2_report_data_hex: String,
+    }
+
+    fn decode_vector_field<const N: usize>(value: &str) -> [u8; N] {
+        hex::decode(value).unwrap().try_into().unwrap()
+    }
+
+    #[test]
+    fn report_data_binds_nonce_ekm_and_leaf_in_v2_only() {
+        let v1 = test_verifier();
+        let v2 = test_report_data_v2_verifier();
+        let vector: ReportDataVector =
+            serde_json::from_str(include_str!("../../tests/data/report_data_vector.json")).unwrap();
+        let nonce = decode_vector_field(&vector.nonce_hex);
+        let ekm = decode_vector_field(&vector.ekm_hex);
+        let leaf = vector.leaf.as_bytes();
+        let legacy_data = decode_vector_field(&vector.legacy_report_data_hex);
+        let v2_data = decode_vector_field(&vector.v2_report_data_hex);
+
+        v1.verify_report_data(&nonce, &ekm, leaf, &legacy_data)
+            .unwrap();
+        v2.verify_report_data(&nonce, &ekm, leaf, &v2_data).unwrap();
+        assert!(matches!(
+            v1.verify_report_data(&nonce, &ekm, leaf, &v2_data),
+            Err(AtlsVerificationError::ReportDataMismatch { .. })
+        ));
+        assert!(matches!(
+            v2.verify_report_data(&nonce, &ekm, leaf, &legacy_data),
+            Err(AtlsVerificationError::ReportDataMismatch { .. })
+        ));
+
+        let mut altered_nonce = nonce;
+        altered_nonce[0] ^= 1;
+        let mut altered_ekm = ekm;
+        altered_ekm[0] ^= 1;
+        for (nonce, ekm, leaf) in [
+            (altered_nonce, ekm, leaf),
+            (nonce, altered_ekm, leaf),
+            (nonce, ekm, b"rotated leaf".as_slice()),
+        ] {
+            assert!(matches!(
+                v2.verify_report_data(&nonce, &ekm, leaf, &v2_data),
+                Err(AtlsVerificationError::ReportDataMismatch { .. })
+            ));
+        }
+        assert!(matches!(
+            v2.verify_report_data(&nonce, &ekm, b"", &v2_data),
+            Err(AtlsVerificationError::Configuration(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn report_data_v2_reaches_quote_verification_without_certificate_event() {
+        let body = br#"{"quote":{"quote":"invalid-hex","event_log":"[]","report_data":"","vm_config":""}}"#;
+        let v1 = test_verifier();
+        let v2 = test_report_data_v2_verifier();
+        let nonce: [u8; 32] = rand::random();
+        let ekm: [u8; 32] = rand::random();
+        for cert_match in [CertEventMatch::Latest, CertEventMatch::Any] {
+            assert!(matches!(
+                v1.appraise_quote_body(body, &nonce, b"leaf", &ekm, cert_match)
+                    .await,
+                Err(AtlsVerificationError::CertificateNotInEventLog)
+            ));
+            assert!(matches!(
+                v2.appraise_quote_body(body, &nonce, b"leaf", &ekm, cert_match)
+                    .await,
+                Err(AtlsVerificationError::Other(e)) if e.to_string().starts_with("Failed to decode quote:")
+            ));
+        }
     }
 
     #[test]

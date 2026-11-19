@@ -46,6 +46,8 @@ export interface DstackTdxPolicy {
   os_image_hash?: string
   /** Expected app compose configuration */
   app_compose?: AppCompose
+  /** Certificate binding mode, default: "event-log". V2 requires full runtime verification. */
+  certificate_binding?: "event-log" | "report-data-v2"
   /** Allowed TCB status values (default: ["UpToDate"]) */
   allowed_tcb_status?: string[]
   /**

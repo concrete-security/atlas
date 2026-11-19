@@ -335,8 +335,8 @@ impl AtlsHttp {
     ///
     /// Sends a `POST /tdx_quote` request with a fresh nonce through the same
     /// hyper connection and runs the full verification pipeline on the
-    /// response (`report_data = SHA512(nonce || session_ekm)` binds it to
-    /// this session). The connection must be idle — check `isReady()` first,
+    /// response using the configured certificate binding for this session.
+    /// The connection must be idle — check `isReady()` first,
     /// like `fetch()`.
     ///
     /// The connection is unavailable for the *entire* exchange, appraisal

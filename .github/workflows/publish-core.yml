@@ -40,7 +40,7 @@ jobs:
       - name: Prepare package
         run: |
           cd ${{ env.CRATE_BASE_DIR }}
-          cargo package
+          cargo package --locked
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: atlas-rs-crate
@@ -89,7 +89,30 @@ jobs:
           # DRY_RUN expansion cannot be double quoted when variable contains empty string otherwise cargo publish 
           # would fail. This is safe since DRY_RUN is handled in the env section above.
           # shellcheck disable=SC2086
-          cargo publish ${DRY_RUN}
+          cargo publish --locked ${DRY_RUN}
+
+      - name: Hash the published crate
+        if: ${{ !inputs.dry_run }}
+        id: published_hash
+        run: |
+          set -euo pipefail
+          version=$(grep '^version = ' core/Cargo.toml | cut -d '"' -f2)
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$ ]]
+          archive="atlas-rs-${version}.crate"
+          published_dir=$(mktemp -d)
+          trap 'rm -rf -- "$published_dir"' EXIT
+          cd "$published_dir"
+          curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+            --retry 5 --retry-all-errors --retry-delay 4 --max-time 30 \
+            --output "$archive" "https://static.crates.io/crates/atlas-rs/$archive"
+          pub_hash=$(sha256sum "./$archive" | base64 -w0)
+          printf 'pub_hash=%s\n' "$pub_hash" >> "$GITHUB_OUTPUT"
+
+      - name: Compare hashes
+        if: ${{ !inputs.dry_run && needs.package.outputs.hash != steps.published_hash.outputs.pub_hash }}
+        run: |
+          echo "ERROR: Published crate hash does not match the packaged crate hash!"
+          exit 1
 
       - name: Create draft release
         if: ${{ !inputs.dry_run }}
@@ -108,14 +131,3 @@ jobs:
             --verify-tag "${TAG}" \
             --title "atlas-rs v${VERSION}" \
             --notes "Published atlas-rs@${VERSION} to crates.io"
-
-      - name: Generate hash
-        if: ${{ !inputs.dry_run }}
-        id: published_hash
-        run: cd target/package && echo "pub_hash=$(sha256sum ./*.crate | base64 -w0)" >> "${GITHUB_OUTPUT}"
-
-      - name: Compare hashes
-        if: ${{ !inputs.dry_run && needs.package.outputs.hash != steps.published_hash.outputs.pub_hash }}
-        run: |
-          echo "ERROR: Published crate hash does not match the packaged crate hash!"
-          exit 1

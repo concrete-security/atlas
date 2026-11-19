@@ -99,7 +99,8 @@ pub use reattest::{ReattestRequest, Reattester};
 // Dstack-specific (backward compatible re-exports)
 // NOTE: compose_hash NOT exposed at root - access via dstack::compose_hash
 pub use dstack::{
-    DstackTDXVerifier, DstackTDXVerifierBuilder, DstackTDXVerifierConfig, DstackTdxPolicy,
+    CertificateBinding, DstackTDXVerifier, DstackTDXVerifierBuilder, DstackTDXVerifierConfig,
+    DstackTdxPolicy,
 };
 
 // Generic TDX
