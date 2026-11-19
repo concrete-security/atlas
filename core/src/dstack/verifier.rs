@@ -331,8 +331,6 @@ impl DstackTDXVerifier {
 
         // Check MRTD (convert from bytes to hex string)
         let actual_mrtd = hex::encode(td_report.mr_td);
-        debug!("MRTD expected: {}", bootchain.mrtd);
-        debug!("MRTD actual:   {}", actual_mrtd);
         let mrtd_match = actual_mrtd == bootchain.mrtd;
         debug!("MRTD match: {}", mrtd_match);
 
@@ -353,8 +351,6 @@ impl DstackTDXVerifier {
         let expected_rtmrs = [&bootchain.rtmr0, &bootchain.rtmr1, &bootchain.rtmr2];
 
         for idx in 0..3usize {
-            debug!("RTMR{} expected: {}", idx, expected_rtmrs[idx]);
-            debug!("RTMR{} actual:   {}", idx, actual_rtmrs[idx]);
             let rtmr_match = &actual_rtmrs[idx] == expected_rtmrs[idx];
             debug!("RTMR{} match: {}", idx, rtmr_match);
 
@@ -1022,31 +1018,32 @@ mod tests {
         policy.into_verifier().unwrap()
     }
 
+    #[derive(serde::Deserialize)]
+    struct ReportDataVector {
+        nonce_hex: String,
+        ekm_hex: String,
+        leaf: String,
+        legacy_report_data_hex: String,
+        v2_report_data_hex: String,
+    }
+
+    fn decode_vector_field<const N: usize>(value: &str) -> [u8; N] {
+        let mut bytes = [0; N];
+        hex::decode_to_slice(value, &mut bytes).unwrap();
+        bytes
+    }
+
     #[test]
     fn report_data_binds_nonce_ekm_and_leaf_in_v2_only() {
         let v1 = test_verifier();
         let v2 = test_report_data_v2_verifier();
-        let nonce = [0x11; 32];
-        let ekm = [0x22; 32];
-        let leaf = b"atlas v2 test leaf DER";
-        let mut legacy_data = [0; 64];
-        let mut v2_data = [0; 64];
-        hex::decode_to_slice(
-            concat!(
-                "542ad75bcaeb539b097d3c0b0e689c68a3fe0b1f5341f0713e9728ec3dec92712",
-                "745117d206094aa45237aabe012839a20ac715a1cc720cccb19c7c74c58ca52"
-            ),
-            &mut legacy_data,
-        )
-        .unwrap();
-        hex::decode_to_slice(
-            concat!(
-                "ac581e1a1d64e43998269d090a9f2a6e488e983f74907eece302daa93135e1cbb",
-                "f2b8a39bc6e1a1672f3b9e1d6f768544a00a4839e4957fdd083e879e70b5891"
-            ),
-            &mut v2_data,
-        )
-        .unwrap();
+        let vector: ReportDataVector =
+            serde_json::from_str(include_str!("../../tests/data/report_data_vector.json")).unwrap();
+        let nonce = decode_vector_field(&vector.nonce_hex);
+        let ekm = decode_vector_field(&vector.ekm_hex);
+        let leaf = vector.leaf.as_bytes();
+        let legacy_data = decode_vector_field(&vector.legacy_report_data_hex);
+        let v2_data = decode_vector_field(&vector.v2_report_data_hex);
 
         v1.verify_report_data(&nonce, &ekm, leaf, &legacy_data)
             .unwrap();
@@ -1060,9 +1057,13 @@ mod tests {
             Err(AtlsVerificationError::ReportDataMismatch { .. })
         ));
 
+        let mut altered_nonce = nonce;
+        altered_nonce[0] ^= 1;
+        let mut altered_ekm = ekm;
+        altered_ekm[0] ^= 1;
         for (nonce, ekm, leaf) in [
-            ([0x33; 32], ekm, leaf.as_slice()),
-            (nonce, [0x33; 32], leaf.as_slice()),
+            (altered_nonce, ekm, leaf),
+            (nonce, altered_ekm, leaf),
             (nonce, ekm, b"rotated leaf".as_slice()),
         ] {
             assert!(matches!(
@@ -1081,14 +1082,16 @@ mod tests {
         let body = br#"{"quote":{"quote":"invalid-hex","event_log":"[]","report_data":"","vm_config":""}}"#;
         let v1 = test_verifier();
         let v2 = test_report_data_v2_verifier();
+        let nonce: [u8; 32] = rand::random();
+        let ekm: [u8; 32] = rand::random();
         for cert_match in [CertEventMatch::Latest, CertEventMatch::Any] {
             assert!(matches!(
-                v1.appraise_quote_body(body, &[0x11; 32], b"leaf", &[0x22; 32], cert_match)
+                v1.appraise_quote_body(body, &nonce, b"leaf", &ekm, cert_match)
                     .await,
                 Err(AtlsVerificationError::CertificateNotInEventLog)
             ));
             assert!(matches!(
-                v2.appraise_quote_body(body, &[0x11; 32], b"leaf", &[0x22; 32], cert_match)
+                v2.appraise_quote_body(body, &nonce, b"leaf", &ekm, cert_match)
                     .await,
                 Err(AtlsVerificationError::Other(e)) if e.to_string().starts_with("Failed to decode quote:")
             ));
