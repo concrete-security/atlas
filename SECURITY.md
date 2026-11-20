@@ -53,6 +53,7 @@ The following properties must hold:
 - the TLS server name and certificate chain are verified before the connection is returned;
 - TDX evidence is cryptographically verified and its TCB status is explicitly allowed by policy;
 - the attested certificate and EKM bind the evidence to the current TLS connection and prevent replay across sessions;
+- TLS session resumption and 0-RTT are never used: every connection performs a full handshake followed by fresh attestation verification before it is returned;
 - when runtime verification is enabled, expected bootchain measurements, OS image, application composition, and replayed runtime measurements must all match;
 - unless re-attestation is explicitly disabled (`reattestation_interval_secs: 0`), no request is dispatched by a binding's HTTP client on a connection whose attestation evidence is older than the configured interval (default 300 seconds): the connection is transparently re-attested in-band — the full verification pipeline over the live session, with a fresh nonce bound to the same session EKM — or replaced by a freshly attested connection;
 - a failed re-attestation is fail-closed: the evidence age is never refreshed, the connection is torn down, and it is never reused;
